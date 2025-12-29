@@ -1,0 +1,531 @@
+---
+# bootstrap-k8s.yml - Bootstrap Kubernetes cluster on mgmt-core nodes
+#
+# Usage:
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml
+#
+# Override variables:
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml -e "k8s_version=1.30"
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml -e "cni_plugin=calico"
+#
+# Run specific tags:
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags prereq
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags runtime
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags k8s-install
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags init-cluster
+#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags join-workers
+
+# =============================================================================
+# PHASE 1: Prerequisites on ALL nodes
+# =============================================================================
+- name: "Phase 1: Configure prerequisites on all nodes"
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  tags: [prereq, all]
+
+  tasks:
+    - name: Display cluster info
+      ansible.builtin.debug:
+        msg:
+          - "Node: {{ inventory_hostname }} ({{ ansible_host }})"
+          - "Role: {{ k8s_role }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Set hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Update /etc/hosts with cluster nodes
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: ".*{{ hostvars[item].inventory_hostname }}$"
+        line: "{{ hostvars[item].ansible_host }} {{ hostvars[item].inventory_hostname }}"
+        state: present
+      loop: "{{ groups['k8s_cluster'] }}"
+
+    - name: Disable swap
+      ansible.builtin.command: swapoff -a
+      when: disable_swap
+      changed_when: true
+
+    - name: Remove swap from fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '.*swap.*'
+        state: absent
+      when: disable_swap
+
+    - name: Disable zram swap permanently (Fedora)
+      ansible.builtin.shell: |
+        systemctl stop swap-create@zram0.service 2>/dev/null || true
+        systemctl disable swap-create@zram0.service 2>/dev/null || true
+        systemctl mask swap-create@zram0.service 2>/dev/null || true
+        systemctl stop systemd-zram-setup@zram0.service 2>/dev/null || true
+        systemctl disable systemd-zram-setup@zram0.service 2>/dev/null || true
+        systemctl mask systemd-zram-setup@zram0.service 2>/dev/null || true
+        swapoff /dev/zram0 2>/dev/null || true
+        zramctl --reset /dev/zram0 2>/dev/null || true
+        rm -f /etc/systemd/zram-generator.conf /usr/lib/systemd/zram-generator.conf
+        echo "blacklist zram" > /etc/modprobe.d/zram-blacklist.conf
+      when: disable_swap
+      changed_when: true
+
+    - name: Load required kernel modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ kernel_modules }}"
+
+    - name: Ensure kernel modules load on boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          {% for module in kernel_modules %}
+          {{ module }}
+          {% endfor %}
+        mode: '0644'
+
+    - name: Configure sysctl for Kubernetes
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/k8s.conf
+        reload: true
+        state: present
+      loop: "{{ sysctl_settings | dict2items }}"
+
+    - name: Disable SELinux (set to permissive)
+      ansible.posix.selinux:
+        state: permissive
+        policy: targeted
+      when: ansible_os_family == "RedHat"
+
+    - name: Disable firewalld (will use k8s network policies)
+      ansible.builtin.systemd:
+        name: firewalld
+        state: stopped
+        enabled: false
+      ignore_errors: true
+
+# =============================================================================
+# PHASE 2: Install Container Runtime (containerd)
+# =============================================================================
+- name: "Phase 2: Install container runtime on all nodes"
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  tags: [runtime, all]
+
+  tasks:
+    - name: Install containerd dependencies
+      ansible.builtin.dnf:
+        name:
+          - curl
+          - tar
+          - conntrack-tools
+          - socat
+          - iproute-tc
+        state: present
+
+    - name: Create containerd directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/containerd
+        - /opt/cni/bin
+
+    - name: Check if containerd is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/containerd
+      register: containerd_installed
+
+    - name: Download containerd
+      ansible.builtin.shell: |
+        curl -fsSL -o /tmp/containerd.tar.gz \
+          "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+      args:
+        creates: /tmp/containerd.tar.gz
+      when: not containerd_installed.stat.exists
+
+    - name: Extract containerd
+      ansible.builtin.unarchive:
+        src: /tmp/containerd.tar.gz
+        dest: /usr/local
+        remote_src: true
+      when: not containerd_installed.stat.exists
+
+    - name: Download containerd systemd service
+      ansible.builtin.shell: |
+        curl -fsSL -o /etc/systemd/system/containerd.service \
+          "https://raw.githubusercontent.com/containerd/containerd/main/containerd.service"
+      args:
+        creates: /etc/systemd/system/containerd.service
+
+    - name: Generate default containerd config
+      ansible.builtin.shell: |
+        containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Download CNI plugins
+      ansible.builtin.shell: |
+        curl -fsSL -o /tmp/cni-plugins.tgz \
+          "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz"
+      args:
+        creates: /tmp/cni-plugins.tgz
+
+    - name: Extract CNI plugins
+      ansible.builtin.unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: true
+
+    - name: Install runc
+      ansible.builtin.shell: |
+        curl -fsSL -o /usr/local/sbin/runc \
+          "https://github.com/opencontainers/runc/releases/download/v1.2.3/runc.amd64" && \
+        chmod 755 /usr/local/sbin/runc
+      args:
+        creates: /usr/local/sbin/runc
+
+    - name: Enable and start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Verify containerd is running
+      ansible.builtin.command: ctr version
+      register: ctr_version
+      changed_when: false
+
+    - name: Display containerd version
+      ansible.builtin.debug:
+        msg: "containerd: {{ ctr_version.stdout_lines[0] | default('installed') }}"
+
+# =============================================================================
+# PHASE 3: Install Kubernetes components
+# =============================================================================
+- name: "Phase 3: Install Kubernetes components on all nodes"
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  tags: [k8s-install, all]
+
+  tasks:
+    - name: Add Kubernetes YUM repository
+      ansible.builtin.yum_repository:
+        name: kubernetes
+        description: Kubernetes Repository
+        baseurl: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/rpm/"
+        gpgcheck: true
+        gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/rpm/repodata/repomd.xml.key"
+        enabled: true
+        exclude:
+          - kubelet
+          - kubeadm
+          - kubectl
+          - cri-tools
+          - kubernetes-cni
+
+    - name: Install Kubernetes packages
+      ansible.builtin.dnf:
+        name:
+          - "kubelet-{{ k8s_full_version }}"
+          - "kubeadm-{{ k8s_full_version }}"
+          - "kubectl-{{ k8s_full_version }}"
+        state: present
+        disable_excludes: kubernetes
+
+    - name: Enable kubelet service
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+        daemon_reload: true
+
+    - name: Configure kubelet cgroup driver
+      ansible.builtin.copy:
+        dest: /etc/default/kubelet
+        content: |
+          KUBELET_EXTRA_ARGS=--cgroup-driver=systemd
+        mode: '0644'
+      notify: Restart kubelet
+
+    - name: Install bash completion for kubectl
+      ansible.builtin.shell: |
+        kubectl completion bash > /etc/bash_completion.d/kubectl
+      args:
+        creates: /etc/bash_completion.d/kubectl
+      when: install_bash_completion
+
+    - name: Verify kubeadm installation
+      ansible.builtin.command: kubeadm version -o short
+      register: kubeadm_version
+      changed_when: false
+
+    - name: Display Kubernetes version
+      ansible.builtin.debug:
+        msg: "kubeadm: {{ kubeadm_version.stdout }}"
+
+  handlers:
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+
+# =============================================================================
+# PHASE 4: Initialize Control Plane
+# =============================================================================
+- name: "Phase 4: Initialize Kubernetes control plane"
+  hosts: k8s_first_control_plane
+  become: true
+  gather_facts: true
+  tags: [init-cluster, control-plane]
+
+  tasks:
+    - name: Check if cluster is already initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_init_check
+
+    - name: Initialize Kubernetes cluster
+      ansible.builtin.command: >
+        kubeadm init
+        --pod-network-cidr={{ pod_network_cidr }}
+        --service-cidr={{ service_cidr }}
+        --apiserver-advertise-address={{ api_server_advertise_address }}
+        --kubernetes-version={{ k8s_full_version }}
+        --token-ttl={{ token_ttl }}
+      register: kubeadm_init
+      when: not kubeadm_init_check.stat.exists
+
+    - name: Display kubeadm init output
+      ansible.builtin.debug:
+        var: kubeadm_init.stdout_lines
+      when: kubeadm_init is changed
+
+    - name: Create .kube directory for root
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0700'
+
+    - name: Copy admin.conf to root's .kube/config
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: true
+        mode: '0600'
+
+    - name: Fetch kubeconfig to Ansible controller
+      ansible.builtin.fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ local_kubeconfig_path }}"
+        flat: true
+
+    - name: Generate join command
+      ansible.builtin.command: kubeadm token create --print-join-command
+      register: join_command_raw
+      changed_when: false
+
+    - name: Set join command fact
+      ansible.builtin.set_fact:
+        k8s_join_command: "{{ join_command_raw.stdout }}"
+
+    - name: Save join command to file
+      ansible.builtin.copy:
+        content: "{{ k8s_join_command }}"
+        dest: /root/k8s-join-command.sh
+        mode: '0700'
+
+    - name: Display join command
+      ansible.builtin.debug:
+        msg: "Join command: {{ k8s_join_command }}"
+
+# =============================================================================
+# PHASE 5: Install CNI (Network Plugin)
+# =============================================================================
+- name: "Phase 5: Install CNI network plugin"
+  hosts: k8s_first_control_plane
+  become: true
+  gather_facts: false
+  tags: [cni, control-plane]
+
+  tasks:
+    - name: Wait for API server to be ready
+      ansible.builtin.wait_for:
+        host: "{{ api_server_advertise_address }}"
+        port: 6443
+        delay: 10
+        timeout: 300
+
+    - name: Install Flannel CNI
+      ansible.builtin.command: >
+        kubectl apply -f https://github.com/flannel-io/flannel/releases/download/v{{ flannel_version }}/kube-flannel.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: cni_plugin == "flannel"
+      register: flannel_install
+      changed_when: "'created' in flannel_install.stdout or 'configured' in flannel_install.stdout"
+
+    - name: Install Calico CNI
+      ansible.builtin.command: >
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: cni_plugin == "calico"
+      register: calico_install
+      changed_when: "'created' in calico_install.stdout or 'configured' in calico_install.stdout"
+
+    - name: Wait for CNI pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pods -l app=flannel -n kube-flannel --timeout=120s || \
+        kubectl wait --for=condition=ready pods -l k8s-app=calico-node -n kube-system --timeout=120s || true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+# =============================================================================
+# PHASE 6: Join Worker Nodes
+# =============================================================================
+- name: "Phase 6: Join worker nodes to cluster"
+  hosts: k8s_workers
+  become: true
+  gather_facts: false
+  tags: [join-workers, workers]
+
+  tasks:
+    - name: Check if node is already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Get join command from control plane
+      ansible.builtin.set_fact:
+        k8s_join_command: "{{ hostvars[groups['k8s_first_control_plane'][0]]['k8s_join_command'] }}"
+      when: not kubelet_conf.stat.exists
+
+    - name: Join node to cluster
+      ansible.builtin.command: "{{ k8s_join_command }}"
+      register: join_result
+      when: not kubelet_conf.stat.exists
+
+    - name: Display join result
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} joined the cluster successfully"
+      when: join_result is changed
+
+# =============================================================================
+# PHASE 7: Post-installation tasks
+# =============================================================================
+- name: "Phase 7: Post-installation configuration"
+  hosts: k8s_first_control_plane
+  become: true
+  gather_facts: false
+  tags: [post-install, control-plane]
+
+  tasks:
+    - name: Wait for all nodes to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready nodes --all --timeout=300s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodes_ready
+      changed_when: false
+
+    - name: Install Helm
+      when: install_helm
+      block:
+        - name: Download Helm
+          ansible.builtin.shell: |
+            curl -fsSL -o /tmp/helm.tar.gz \
+              "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+          args:
+            creates: /tmp/helm.tar.gz
+
+        - name: Extract Helm
+          ansible.builtin.unarchive:
+            src: /tmp/helm.tar.gz
+            dest: /tmp
+            remote_src: true
+
+        - name: Install Helm binary
+          ansible.builtin.copy:
+            src: /tmp/linux-amd64/helm
+            dest: /usr/local/bin/helm
+            mode: '0755'
+            remote_src: true
+
+        - name: Verify Helm installation
+          ansible.builtin.command: helm version --short
+          register: helm_ver
+          changed_when: false
+
+        - name: Display Helm version
+          ansible.builtin.debug:
+            msg: "Helm: {{ helm_ver.stdout }}"
+
+    - name: Install metrics-server
+      ansible.builtin.command: >
+        kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: install_metrics_server
+      register: metrics_install
+      changed_when: "'created' in metrics_install.stdout or 'configured' in metrics_install.stdout"
+
+    - name: Patch metrics-server for insecure TLS (lab environment)
+      ansible.builtin.shell: |
+        kubectl patch deployment metrics-server -n kube-system \
+          --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: install_metrics_server
+      register: metrics_patch
+      changed_when: "'patched' in metrics_patch.stdout"
+      failed_when: false
+
+    - name: Get cluster info
+      ansible.builtin.command: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_info
+      changed_when: false
+
+    - name: Get node status
+      ansible.builtin.command: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: node_status
+      changed_when: false
+
+    - name: Display final cluster status
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "Kubernetes Cluster Bootstrap Complete!"
+          - "=============================================="
+          - ""
+          - "{{ cluster_info.stdout_lines }}"
+          - ""
+          - "Nodes:"
+          - "{{ node_status.stdout_lines }}"
+          - ""
+          - "=============================================="
+          - "Kubeconfig saved to: {{ local_kubeconfig_path }}"
+          - ""
+          - "Access cluster:"
+          - "  export KUBECONFIG={{ local_kubeconfig_path }}"
+          - "  kubectl get nodes"
+          - "=============================================="

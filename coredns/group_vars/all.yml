@@ -1,0 +1,75 @@
+---
+# CoreDNS External DNS Server Configuration
+# =============================================================================
+
+# Domain to serve
+dns_domain: "engatwork.com"
+
+# =============================================================================
+# MetalLB Configuration
+# =============================================================================
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.1.200-10.10.1.220"
+metallb_pool_name: "default-pool"
+
+# =============================================================================
+# CoreDNS Configuration
+# =============================================================================
+coredns_version: "1.11.3"
+coredns_namespace: "dns"
+coredns_replicas: 2
+
+# LoadBalancer IP for CoreDNS (first available from pool)
+coredns_lb_ip: "10.10.1.200"
+
+# Upstream DNS servers for external resolution
+upstream_dns:
+  - "8.8.8.8"
+  - "8.8.4.4"
+
+# =============================================================================
+# DNS Records
+# Add your infrastructure records here
+# =============================================================================
+dns_records:
+  # pfSense Gateway
+  - ip: "192.168.0.101"
+    hostnames:
+      - "pfsense"
+      - "gateway"
+      - "firewall"
+
+  # oVirt Engine
+  - ip: "192.168.0.105"
+    hostnames:
+      - "ovirt"
+      - "engine"
+      - "virt"
+
+  # Kubernetes Control Plane
+  - ip: "10.10.1.101"
+    hostnames:
+      - "mgmt-core-01"
+      - "k8s"
+      - "kubernetes"
+      - "api"
+
+  # Kubernetes Workers
+  - ip: "10.10.1.102"
+    hostnames:
+      - "mgmt-core-02"
+
+  - ip: "10.10.1.103"
+    hostnames:
+      - "mgmt-core-03"
+
+  # CoreDNS itself
+  - ip: "10.10.1.200"
+    hostnames:
+      - "dns"
+      - "ns1"
+
+# =============================================================================
+# Kubeconfig (path on control plane node)
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"

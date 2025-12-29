@@ -1,0 +1,339 @@
+---
+# deploy-coredns.yml - Deploy CoreDNS as external DNS server
+#
+# Prerequisites:
+#   - Kubernetes cluster is running
+#   - kubectl access configured
+#
+# Usage:
+#   ansible-playbook -i inventory.ini deploy-coredns.yml
+#
+# Tags:
+#   --tags metallb    : Install MetalLB only
+#   --tags coredns    : Install CoreDNS only
+#   --tags verify     : Verify DNS is working
+
+# =============================================================================
+# PHASE 1: Install MetalLB
+# =============================================================================
+- name: "Phase 1: Install MetalLB LoadBalancer"
+  hosts: k8s_control_plane
+  become: true
+  gather_facts: false
+  tags: [metallb, all]
+
+  tasks:
+    - name: Check if MetalLB is already installed
+      ansible.builtin.shell: |
+        kubectl get namespace metallb-system 2>/dev/null
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: metallb_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install MetalLB
+      when: metallb_check.rc != 0
+      block:
+        - name: Apply MetalLB manifests
+          ansible.builtin.shell: |
+            kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v{{ metallb_version }}/config/manifests/metallb-native.yaml
+          environment:
+            KUBECONFIG: "{{ kubeconfig_path }}"
+          register: metallb_install
+
+        - name: Wait for MetalLB controller to be ready
+          ansible.builtin.shell: |
+            kubectl wait --for=condition=ready pods -l app=metallb,component=controller -n metallb-system --timeout=120s
+          environment:
+            KUBECONFIG: "{{ kubeconfig_path }}"
+          register: metallb_wait
+          retries: 3
+          delay: 10
+          until: metallb_wait.rc == 0
+
+    - name: Create MetalLB IP Address Pool
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: metallb.io/v1beta1
+        kind: IPAddressPool
+        metadata:
+          name: {{ metallb_pool_name }}
+          namespace: metallb-system
+        spec:
+          addresses:
+          - {{ metallb_ip_pool }}
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: ip_pool
+
+    - name: Create MetalLB L2 Advertisement
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: metallb.io/v1beta1
+        kind: L2Advertisement
+        metadata:
+          name: l2-advert
+          namespace: metallb-system
+        spec:
+          ipAddressPools:
+          - {{ metallb_pool_name }}
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: l2_advert
+
+    - name: Display MetalLB status
+      ansible.builtin.debug:
+        msg:
+          - "MetalLB installed successfully"
+          - "IP Pool: {{ metallb_ip_pool }}"
+
+# =============================================================================
+# PHASE 2: Deploy CoreDNS External
+# =============================================================================
+- name: "Phase 2: Deploy CoreDNS External DNS Server"
+  hosts: k8s_control_plane
+  become: true
+  gather_facts: false
+  tags: [coredns, all]
+
+  tasks:
+    - name: Create DNS namespace
+      ansible.builtin.shell: |
+        kubectl create namespace {{ coredns_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Generate hosts file content
+      ansible.builtin.set_fact:
+        hosts_content: |
+          {% for record in dns_records %}
+          {% for hostname in record.hostnames %}
+          {{ record.ip }} {{ hostname }}.{{ dns_domain }}
+          {% endfor %}
+          {% endfor %}
+
+    - name: Create CoreDNS ConfigMap
+      ansible.builtin.shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: coredns-external
+          namespace: {{ coredns_namespace }}
+        data:
+          Corefile: |
+            {{ dns_domain }}:53 {
+                hosts /etc/coredns/hosts {
+                    fallthrough
+                }
+                log
+                errors
+                cache 30
+            }
+
+            .:53 {
+                forward . {{ upstream_dns | join(' ') }}
+                cache 30
+                log
+                errors
+                health :8080
+                ready :8181
+            }
+          hosts: |
+            # Auto-generated DNS records for {{ dns_domain }}
+            # Managed by Ansible - do not edit manually
+            {% for record in dns_records %}
+            {% for hostname in record.hostnames %}
+            {{ record.ip }} {{ hostname }}.{{ dns_domain }}
+            {% endfor %}
+            {% endfor %}
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Create CoreDNS Deployment
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: coredns-external
+          namespace: {{ coredns_namespace }}
+          labels:
+            app: coredns-external
+        spec:
+          replicas: {{ coredns_replicas }}
+          selector:
+            matchLabels:
+              app: coredns-external
+          template:
+            metadata:
+              labels:
+                app: coredns-external
+            spec:
+              containers:
+              - name: coredns
+                image: coredns/coredns:{{ coredns_version }}
+                args: ["-conf", "/etc/coredns/Corefile"]
+                ports:
+                - containerPort: 53
+                  name: dns-udp
+                  protocol: UDP
+                - containerPort: 53
+                  name: dns-tcp
+                  protocol: TCP
+                volumeMounts:
+                - name: config
+                  mountPath: /etc/coredns
+                  readOnly: true
+                resources:
+                  requests:
+                    memory: "64Mi"
+                    cpu: "100m"
+                  limits:
+                    memory: "128Mi"
+                    cpu: "200m"
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  initialDelaySeconds: 60
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: /ready
+                    port: 8181
+                  initialDelaySeconds: 10
+                  periodSeconds: 5
+              volumes:
+              - name: config
+                configMap:
+                  name: coredns-external
+                  items:
+                  - key: Corefile
+                    path: Corefile
+                  - key: hosts
+                    path: hosts
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Create CoreDNS Service (LoadBalancer)
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: coredns-external
+          namespace: {{ coredns_namespace }}
+          annotations:
+            metallb.universe.tf/loadBalancerIPs: {{ coredns_lb_ip }}
+        spec:
+          type: LoadBalancer
+          selector:
+            app: coredns-external
+          ports:
+          - name: dns-udp
+            port: 53
+            targetPort: 53
+            protocol: UDP
+          - name: dns-tcp
+            port: 53
+            targetPort: 53
+            protocol: TCP
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Wait for CoreDNS pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pods -l app=coredns-external -n {{ coredns_namespace }} --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: coredns_wait
+      retries: 3
+      delay: 10
+      until: coredns_wait.rc == 0
+
+    - name: Get CoreDNS service status
+      ansible.builtin.shell: |
+        kubectl get svc coredns-external -n {{ coredns_namespace }} -o wide
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: coredns_svc
+      changed_when: false
+
+    - name: Display CoreDNS service
+      ansible.builtin.debug:
+        var: coredns_svc.stdout_lines
+
+# =============================================================================
+# PHASE 3: Verify DNS
+# =============================================================================
+- name: "Phase 3: Verify DNS Resolution"
+  hosts: k8s_control_plane
+  become: true
+  gather_facts: false
+  tags: [verify, all]
+
+  tasks:
+    - name: Install dig (bind-utils)
+      ansible.builtin.dnf:
+        name: bind-utils
+        state: present
+
+    - name: Wait for DNS service to be fully ready
+      ansible.builtin.pause:
+        seconds: 10
+        prompt: "Waiting for DNS service to stabilize..."
+
+    - name: Test internal DNS resolution
+      ansible.builtin.shell: |
+        dig @{{ coredns_lb_ip }} pfsense.{{ dns_domain }} +short
+      register: internal_test
+      changed_when: false
+      failed_when: false
+
+    - name: Test external DNS resolution
+      ansible.builtin.shell: |
+        dig @{{ coredns_lb_ip }} google.com +short
+      register: external_test
+      changed_when: false
+      failed_when: false
+
+    - name: Get all DNS records configured
+      ansible.builtin.shell: |
+        kubectl get configmap coredns-external -n {{ coredns_namespace }} -o jsonpath='{.data.hosts}'
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: dns_hosts
+      changed_when: false
+
+    - name: Display DNS verification results
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "CoreDNS External DNS Server Deployed!"
+          - "=============================================="
+          - ""
+          - "DNS Server IP: {{ coredns_lb_ip }}"
+          - "Domain: {{ dns_domain }}"
+          - ""
+          - "Test Results:"
+          - "  Internal (pfsense.{{ dns_domain }}): {{ internal_test.stdout | default('FAILED') }}"
+          - "  External (google.com): {{ external_test.stdout_lines[0] | default('FAILED') }}"
+          - ""
+          - "Configured Records:"
+          - "{{ dns_hosts.stdout }}"
+          - ""
+          - "=============================================="
+          - "Usage:"
+          - "  dig @{{ coredns_lb_ip }} pfsense.{{ dns_domain }}"
+          - "  dig @{{ coredns_lb_ip }} google.com"
+          - ""
+          - "Configure pfSense to forward DNS to {{ coredns_lb_ip }}"
+          - "Or set VMs to use {{ coredns_lb_ip }} as DNS server"
+          - "=============================================="
