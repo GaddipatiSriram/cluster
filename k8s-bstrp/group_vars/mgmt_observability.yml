@@ -1,0 +1,93 @@
+---
+# Kubernetes Cluster Configuration - Management Observability
+# =============================================================================
+# Observability stack cluster for: Grafana, Prometheus, Loki, Tempo
+# Network: Mgmt-Observ-Net (VLAN 12, 10.10.3.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-observability.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-observability-cluster"
+cluster_type: "mgmt-observability"
+cluster_description: "Monitoring and observability stack"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Mgmt-Observ-Net (VLAN 12)
+network_name: "Mgmt-Observ-Net"
+network_vlan: 12
+network_subnet: "10.10.3.0/24"
+network_gateway: "10.10.3.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.246.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.98.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-mgmt-observability"
+
+# =============================================================================
+# METALLB CONFIGURATION (for LoadBalancer services)
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.3.200-10.10.3.220"
+metallb_pool_name: "mgmt-observability-pool"
+
+# =============================================================================
+# INGRESS CONFIGURATION
+# =============================================================================
+ingress_enabled: true
+ingress_controller: "nginx"
+ingress_lb_ip: "10.10.3.200"
+
+# =============================================================================
+# STORAGE CONFIGURATION
+# =============================================================================
+# Observability stack requires persistent storage for metrics/logs
+storage_class: "local-path"
+prometheus_retention: "15d"
+loki_retention: "30d"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+# Services to be deployed on this cluster
+cluster_services:
+  - name: "prometheus"
+    description: "Metrics collection and alerting"
+    namespace: "monitoring"
+  - name: "grafana"
+    description: "Visualization and dashboards"
+    namespace: "monitoring"
+  - name: "alertmanager"
+    description: "Alert routing and notification"
+    namespace: "monitoring"
+  - name: "loki"
+    description: "Log aggregation"
+    namespace: "logging"
+  - name: "tempo"
+    description: "Distributed tracing"
+    namespace: "tracing"
+  - name: "jaeger"
+    description: "Distributed tracing UI"
+    namespace: "tracing"
+  - name: "kube-state-metrics"
+    description: "Kubernetes state metrics"
+    namespace: "monitoring"
+  - name: "node-exporter"
+    description: "Node-level metrics"
+    namespace: "monitoring"

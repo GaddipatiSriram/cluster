@@ -1,0 +1,70 @@
+---
+# Kubernetes Cluster Configuration - Development Data Tier
+# =============================================================================
+# Data tier cluster for: PostgreSQL, Redis, Kafka, Elasticsearch
+# Network: Dev-Data-Net (VLAN 22, 10.20.3.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/dev-data.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "dev-data-cluster"
+cluster_type: "dev-data"
+cluster_description: "Development data tier - databases and message queues"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Dev-Data-Net (VLAN 22)
+network_name: "Dev-Data-Net"
+network_vlan: 22
+network_subnet: "10.20.3.0/24"
+network_gateway: "10.20.3.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.249.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.101.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-dev-data"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.20.3.200-10.20.3.220"
+metallb_pool_name: "dev-data-pool"
+
+# =============================================================================
+# STORAGE CONFIGURATION
+# =============================================================================
+storage_class: "local-path"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "postgresql"
+    description: "PostgreSQL database"
+    namespace: "databases"
+  - name: "redis"
+    description: "Redis cache/message broker"
+    namespace: "databases"
+  - name: "kafka"
+    description: "Apache Kafka message queue"
+    namespace: "messaging"
+  - name: "elasticsearch"
+    description: "Elasticsearch search engine"
+    namespace: "search"

@@ -1,0 +1,59 @@
+---
+# Kubernetes Cluster Configuration - Development Apps Tier
+# =============================================================================
+# Apps tier cluster for: API servers, microservices, application workloads
+# Network: Dev-Apps-Net (VLAN 21, 10.20.2.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/dev-apps.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "dev-apps-cluster"
+cluster_type: "dev-apps"
+cluster_description: "Development apps tier - microservices and APIs"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Dev-Apps-Net (VLAN 21)
+network_name: "Dev-Apps-Net"
+network_vlan: 21
+network_subnet: "10.20.2.0/24"
+network_gateway: "10.20.2.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.248.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.100.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-dev-apps"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.20.2.200-10.20.2.220"
+metallb_pool_name: "dev-apps-pool"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "application-workloads"
+    description: "Development application deployments"
+    namespace: "apps"
+  - name: "api-gateway"
+    description: "API Gateway services"
+    namespace: "api"

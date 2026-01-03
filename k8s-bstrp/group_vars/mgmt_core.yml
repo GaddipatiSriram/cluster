@@ -1,0 +1,66 @@
+---
+# Kubernetes Cluster Configuration - Management Core
+# =============================================================================
+# Core infrastructure cluster for: DNS, NTP, LDAP, Bastion, VPN
+# Network: Mgmt-Core-Net (VLAN 10, 10.10.1.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-core-cluster"
+cluster_type: "mgmt-core"
+cluster_description: "Core infrastructure services"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Mgmt-Core-Net (VLAN 10)
+network_name: "Mgmt-Core-Net"
+network_vlan: 10
+network_subnet: "10.10.1.0/24"
+network_gateway: "10.10.1.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.244.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.96.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-mgmt-core"
+
+# =============================================================================
+# METALLB CONFIGURATION (for CoreDNS/LoadBalancer services)
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.1.200-10.10.1.220"
+metallb_pool_name: "mgmt-core-pool"
+
+# =============================================================================
+# DNS CONFIGURATION
+# =============================================================================
+coredns_enabled: true
+coredns_lb_ip: "10.10.1.200"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+# Services to be deployed on this cluster
+cluster_services:
+  - name: "coredns-external"
+    description: "External DNS server for infrastructure"
+  - name: "ntp-server"
+    description: "Network time synchronization"
+  - name: "bastion"
+    description: "SSH jump host / bastion server"

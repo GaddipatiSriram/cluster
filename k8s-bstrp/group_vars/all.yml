@@ -1,73 +1,46 @@
 ---
-# Kubernetes Bootstrap Configuration
-# Edit these variables to customize your cluster
+# Kubernetes Bootstrap - Common Configuration
+# =============================================================================
+# This file contains settings shared across ALL cluster deployments.
+# Cluster-specific settings are in separate files (mgmt_core.yml, etc.)
 #
-# NOTE: Nodes are defined in inventory.ini, not here.
+# Select cluster type by using the appropriate inventory file:
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml
+#   ansible-playbook -i inventory/mgmt-devops.ini bootstrap-k8s.yml
+#   ansible-playbook -i inventory/mgmt-observability.ini bootstrap-k8s.yml
 
 # =============================================================================
-# CLUSTER CONFIGURATION
+# KUBERNETES VERSION
 # =============================================================================
-
-# Kubernetes version (check: https://kubernetes.io/releases/)
+# Check releases: https://kubernetes.io/releases/
 k8s_version: "1.31"
 k8s_full_version: "1.31.4"
-
-# Cluster name and domain
-cluster_name: "mgmt-cluster"
-cluster_domain: "cluster.local"
-
-# Pod network CIDR (do not overlap with node network)
-pod_network_cidr: "10.244.0.0/16"
-
-# Service network CIDR
-service_cidr: "10.96.0.0/12"
-
-# API server advertise address (set to first control plane node IP)
-# For HA with load balancer, set to the VIP
-api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
-
-# API server endpoint
-control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
 
 # =============================================================================
 # CONTAINER RUNTIME
 # =============================================================================
-
-# Container runtime: containerd (recommended) or crio
 container_runtime: "containerd"
-
-# Containerd version
 containerd_version: "1.7.24"
-
-# CNI plugins version
 cni_plugins_version: "1.6.0"
+runc_version: "1.2.3"
 
 # =============================================================================
 # CNI (NETWORK PLUGIN)
 # =============================================================================
-
-# CNI plugin: flannel, calico, cilium
+# Options: flannel, calico
 cni_plugin: "flannel"
-
-# Flannel version (if using flannel)
 flannel_version: "0.26.1"
-
-# Calico version (if using calico)
 calico_version: "3.29.1"
 
 # =============================================================================
 # NODE CONFIGURATION
 # =============================================================================
-
-# Disable swap (required for Kubernetes)
 disable_swap: true
 
-# Load required kernel modules
 kernel_modules:
   - overlay
   - br_netfilter
 
-# Sysctl settings for Kubernetes networking
 sysctl_settings:
   net.bridge.bridge-nf-call-iptables: 1
   net.bridge.bridge-nf-call-ip6tables: 1
@@ -76,8 +49,6 @@ sysctl_settings:
 # =============================================================================
 # FIREWALL PORTS
 # =============================================================================
-
-# Control plane ports
 control_plane_ports:
   - 6443/tcp    # Kubernetes API server
   - 2379/tcp    # etcd client
@@ -86,35 +57,29 @@ control_plane_ports:
   - 10259/tcp   # kube-scheduler
   - 10257/tcp   # kube-controller-manager
 
-# Worker node ports
 worker_ports:
   - 10250/tcp   # Kubelet API
   - 10256/tcp   # kube-proxy
   - 30000-32767/tcp  # NodePort Services
 
-# Flannel ports (if using flannel)
 flannel_ports:
   - 8472/udp    # VXLAN
 
 # =============================================================================
-# ADDITIONAL OPTIONS
+# ADDITIONAL COMPONENTS
 # =============================================================================
-
-# Install kubectl bash completion
 install_bash_completion: true
-
-# Install Helm
 install_helm: true
 helm_version: "3.16.3"
-
-# Install metrics-server
 install_metrics_server: true
 
-# Kubeconfig location on control plane
-kubeconfig_path: "/etc/kubernetes/admin.conf"
-
-# Local kubeconfig destination (on Ansible controller)
-local_kubeconfig_path: "/root/cluster/kubeconfig"
-
-# Join token TTL (default 24h, set 0 for non-expiring)
+# =============================================================================
+# CLUSTER DEFAULTS (can be overridden in cluster-specific vars)
+# =============================================================================
+cluster_domain: "cluster.local"
 token_ttl: "24h"
+
+# =============================================================================
+# DOMAIN SETTINGS
+# =============================================================================
+dns_domain: "engatwork.com"

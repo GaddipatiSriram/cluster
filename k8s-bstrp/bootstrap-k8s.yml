@@ -1,19 +1,65 @@
 ---
-# bootstrap-k8s.yml - Bootstrap Kubernetes cluster on mgmt-core nodes
+# bootstrap-k8s.yml - Bootstrap Kubernetes cluster (dynamic multi-cluster support)
 #
 # Usage:
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml
+#   ansible-playbook -i inventory/mgmt-devops.ini bootstrap-k8s.yml
+#   ansible-playbook -i inventory/mgmt-observability.ini bootstrap-k8s.yml
 #
 # Override variables:
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml -e "k8s_version=1.30"
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml -e "cni_plugin=calico"
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml -e "k8s_version=1.30"
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml -e "cni_plugin=calico"
 #
 # Run specific tags:
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags prereq
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags runtime
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags k8s-install
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags init-cluster
-#   ansible-playbook -i inventory.ini bootstrap-k8s.yml --tags join-workers
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml --tags prereq
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml --tags runtime
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml --tags k8s-install
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml --tags init-cluster
+#   ansible-playbook -i inventory/mgmt-core.ini bootstrap-k8s.yml --tags join-workers
+#
+# Cluster Types:
+#   - mgmt-core: Core infrastructure (DNS, NTP, Bastion) - VLAN 10
+#   - mgmt-devops: DevOps tools (ArgoCD, Jenkins, GitLab) - VLAN 11
+#   - mgmt-observability: Monitoring stack (Grafana, Prometheus) - VLAN 12
+
+# =============================================================================
+# PHASE 0: Load Cluster-Specific Variables
+# =============================================================================
+- name: "Phase 0: Load cluster-specific configuration"
+  hosts: k8s_cluster
+  gather_facts: false
+  tags: [always]
+
+  tasks:
+    - name: Validate cluster_vars_file is defined
+      ansible.builtin.assert:
+        that:
+          - cluster_vars_file is defined
+          - cluster_vars_file | length > 0
+        fail_msg: |
+          cluster_vars_file is not defined. Use one of the inventory files:
+            -i inventory/mgmt-core.ini
+            -i inventory/mgmt-devops.ini
+            -i inventory/mgmt-observability.ini
+        success_msg: "Loading configuration for: {{ cluster_vars_file }}"
+
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
+    - name: Display cluster configuration
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "Cluster: {{ cluster_name }}"
+          - "Type: {{ cluster_type }}"
+          - "Description: {{ cluster_description | default('N/A') }}"
+          - "Network: {{ network_name }} (VLAN {{ network_vlan }})"
+          - "Subnet: {{ network_subnet }}"
+          - "Pod CIDR: {{ pod_network_cidr }}"
+          - "Service CIDR: {{ service_cidr }}"
+          - "=============================================="
+      run_once: true
 
 # =============================================================================
 # PHASE 1: Prerequisites on ALL nodes
@@ -24,10 +70,16 @@
   gather_facts: true
   tags: [prereq, all]
 
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
   tasks:
     - name: Display cluster info
       ansible.builtin.debug:
         msg:
+          - "Cluster: {{ cluster_name }}"
           - "Node: {{ inventory_hostname }} ({{ ansible_host }})"
           - "Role: {{ k8s_role }}"
           - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
@@ -117,6 +169,11 @@
   gather_facts: true
   tags: [runtime, all]
 
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
   tasks:
     - name: Install containerd dependencies
       ansible.builtin.dnf:
@@ -192,7 +249,7 @@
     - name: Install runc
       ansible.builtin.shell: |
         curl -fsSL -o /usr/local/sbin/runc \
-          "https://github.com/opencontainers/runc/releases/download/v1.2.3/runc.amd64" && \
+          "https://github.com/opencontainers/runc/releases/download/v{{ runc_version }}/runc.amd64" && \
         chmod 755 /usr/local/sbin/runc
       args:
         creates: /usr/local/sbin/runc
@@ -221,6 +278,11 @@
   become: true
   gather_facts: true
   tags: [k8s-install, all]
+
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
 
   tasks:
     - name: Add Kubernetes YUM repository
@@ -292,6 +354,11 @@
   gather_facts: true
   tags: [init-cluster, control-plane]
 
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
   tasks:
     - name: Check if cluster is already initialized
       ansible.builtin.stat:
@@ -361,6 +428,11 @@
   gather_facts: false
   tags: [cni, control-plane]
 
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
   tasks:
     - name: Wait for API server to be ready
       ansible.builtin.wait_for:
@@ -404,6 +476,11 @@
   gather_facts: false
   tags: [join-workers, workers]
 
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
   tasks:
     - name: Check if node is already joined
       ansible.builtin.stat:
@@ -433,6 +510,11 @@
   become: true
   gather_facts: false
   tags: [post-install, control-plane]
+
+  pre_tasks:
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
 
   tasks:
     - name: Wait for all nodes to be ready
@@ -514,8 +596,12 @@
       ansible.builtin.debug:
         msg:
           - "=============================================="
-          - "Kubernetes Cluster Bootstrap Complete!"
+          - "{{ cluster_name }} Bootstrap Complete!"
           - "=============================================="
+          - "Cluster Type: {{ cluster_type }}"
+          - "Network: {{ network_name }} ({{ network_subnet }})"
+          - "Pod CIDR: {{ pod_network_cidr }}"
+          - "Service CIDR: {{ service_cidr }}"
           - ""
           - "{{ cluster_info.stdout_lines }}"
           - ""

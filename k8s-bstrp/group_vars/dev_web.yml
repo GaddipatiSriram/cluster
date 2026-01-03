@@ -1,0 +1,66 @@
+---
+# Kubernetes Cluster Configuration - Development Web Tier
+# =============================================================================
+# Web tier cluster for: Ingress controllers, nginx, HAProxy, CDN cache
+# Network: Dev-Web-Net (VLAN 20, 10.20.1.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/dev-web.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "dev-web-cluster"
+cluster_type: "dev-web"
+cluster_description: "Development web tier - ingress and load balancers"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Dev-Web-Net (VLAN 20)
+network_name: "Dev-Web-Net"
+network_vlan: 20
+network_subnet: "10.20.1.0/24"
+network_gateway: "10.20.1.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.247.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.99.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-dev-web"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.20.1.200-10.20.1.220"
+metallb_pool_name: "dev-web-pool"
+
+# =============================================================================
+# INGRESS CONFIGURATION
+# =============================================================================
+ingress_enabled: true
+ingress_controller: "nginx"
+ingress_lb_ip: "10.20.1.200"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "ingress-nginx"
+    description: "NGINX Ingress Controller"
+    namespace: "ingress-nginx"
+  - name: "cert-manager"
+    description: "TLS certificate management"
+    namespace: "cert-manager"

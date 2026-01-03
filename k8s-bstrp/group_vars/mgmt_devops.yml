@@ -1,0 +1,79 @@
+---
+# Kubernetes Cluster Configuration - Management DevOps
+# =============================================================================
+# DevOps tools cluster for: ArgoCD, Jenkins, GitLab, Harbor
+# Network: Mgmt-DevOps-Net (VLAN 11, 10.10.2.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-devops.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-devops-cluster"
+cluster_type: "mgmt-devops"
+cluster_description: "DevOps and CI/CD tools"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+# Network segment: Mgmt-DevOps-Net (VLAN 11)
+network_name: "Mgmt-DevOps-Net"
+network_vlan: 11
+network_subnet: "10.10.2.0/24"
+network_gateway: "10.10.2.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.245.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.97.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-mgmt-devops"
+
+# =============================================================================
+# METALLB CONFIGURATION (for LoadBalancer services)
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.2.200-10.10.2.220"
+metallb_pool_name: "mgmt-devops-pool"
+
+# =============================================================================
+# INGRESS CONFIGURATION
+# =============================================================================
+ingress_enabled: true
+ingress_controller: "nginx"
+ingress_lb_ip: "10.10.2.200"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+# Services to be deployed on this cluster
+cluster_services:
+  - name: "argocd"
+    description: "GitOps continuous delivery"
+    namespace: "argocd"
+  - name: "jenkins"
+    description: "CI/CD automation server"
+    namespace: "jenkins"
+  - name: "gitlab"
+    description: "Git repository and CI/CD"
+    namespace: "gitlab"
+  - name: "harbor"
+    description: "Container registry"
+    namespace: "harbor"
+  - name: "sonarqube"
+    description: "Code quality analysis"
+    namespace: "sonarqube"
+  - name: "vault"
+    description: "Secrets management"
+    namespace: "vault"
