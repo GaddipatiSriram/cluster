@@ -1,0 +1,31 @@
+---
+# Flannel Update Configuration
+# =============================================================================
+# Maps each cluster to its correct pod_network_cidr
+# Flannel default is 10.244.0.0/16 - only mgmt-core matches
+
+flannel_version: "0.26.1"
+kubeconfig_dir: "/root/cluster"
+
+clusters:
+  - name: mgmt-devops
+    kubeconfig: "kubeconfig-mgmt-devops"
+    pod_network_cidr: "10.245.0.0/16"
+
+  - name: mgmt-observability
+    kubeconfig: "kubeconfig-mgmt-observability"
+    pod_network_cidr: "10.246.0.0/16"
+
+  - name: dev-web
+    kubeconfig: "kubeconfig-dev-web"
+    pod_network_cidr: "10.247.0.0/16"
+
+  - name: dev-apps
+    kubeconfig: "kubeconfig-dev-apps"
+    pod_network_cidr: "10.248.0.0/16"
+
+  - name: dev-data
+    kubeconfig: "kubeconfig-dev-data"
+    pod_network_cidr: "10.249.0.0/16"
+
+# mgmt-core is excluded - it already uses 10.244.0.0/16 (Flannel default)

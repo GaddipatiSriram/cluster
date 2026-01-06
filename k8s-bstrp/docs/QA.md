@@ -18,6 +18,55 @@
 - Works well for lab environments
 - Can be changed by setting `cni_plugin: "calico"` in variables
 
+### Q: Does Flannel work like a L3 router or L2 switch?
+
+**A:** Flannel is a **Layer 3 overlay network** using VXLAN encapsulation. It's neither a pure router nor switch - it creates a flat L2 network from the pod's perspective while using L3 tunnels between nodes.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Flannel Overlay Network                       │
+│                     (e.g., 10.245.0.0/16)                       │
+├─────────────────────────────────────────────────────────────────┤
+│   Node 1 (10.10.2.100)              Node 2 (10.10.2.101)        │
+│   ┌─────────────────┐               ┌─────────────────┐         │
+│   │ Subnet: 10.245.0.0/24           │ Subnet: 10.245.1.0/24     │
+│   │  ┌─────┐ ┌─────┐│               │┌─────┐ ┌─────┐  │         │
+│   │  │Pod A│ │Pod B││               ││Pod C│ │Pod D│  │         │
+│   │  │.10  │ │.11  ││               ││.10  │ │.11  │  │         │
+│   │  └──┬──┘ └──┬──┘│               │└──┬──┘ └──┬──┘  │         │
+│   │     └───┬───┘   │               │   └───┬───┘     │         │
+│   │      cni0      │               │     cni0       │         │
+│   │    (bridge)     │               │   (bridge)     │         │
+│   │    flannel.1    │               │  flannel.1     │         │
+│   │    (VXLAN)      │               │  (VXLAN)       │         │
+│   └────────┬────────┘               └───────┬────────┘         │
+│            └──────────── UDP:8472 ──────────┘                   │
+│                     (VXLAN Encapsulation)                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Traffic flow:**
+
+| Scenario | Path | Method |
+|----------|------|--------|
+| Same node | Pod A → cni0 bridge → Pod B | L2 switching (no encap) |
+| Cross node | Pod A → cni0 → flannel.1 → VXLAN → Node 2 → Pod C | L3 VXLAN tunnel |
+
+**VXLAN encapsulation (cross-node):**
+```
+Original packet:  [Src: 10.245.0.10 → Dst: 10.245.1.10]
+                              ↓
+Encapsulated:     [Outer IP: Node1 → Node2] [UDP:8472] [VXLAN] [Original packet]
+```
+
+**Summary:**
+- **Pod's view**: Flat L2 network - all pods appear on same LAN
+- **Implementation**: L3 overlay using VXLAN (UDP encapsulation)
+- **Same node**: L2 bridge (cni0) - no encapsulation
+- **Cross node**: L3 routing + VXLAN tunnel
+- **Subnet allocation**: Each node gets /24 from cluster /16
+
 ### Q: Why containerd instead of Docker?
 
 **A:** containerd is the recommended container runtime for Kubernetes:

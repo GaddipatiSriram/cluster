@@ -1,0 +1,17 @@
+---
+# Update Flannel CNI to use correct Pod CIDR on all clusters
+# Usage: ansible-playbook update-flannel.yml
+# =============================================================================
+
+- name: Update Flannel CNI configuration
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/flannel-update.yml
+
+  tasks:
+    - name: Update Flannel on each cluster
+      include_tasks: tasks/update-flannel-cluster.yml
+      loop: "{{ clusters }}"
+      loop_control:
+        loop_var: cluster

@@ -1,0 +1,59 @@
+---
+# Update Flannel CNI for a single cluster
+# Called by update-flannel.yml with cluster variable
+
+- name: "{{ cluster.name }} - Display cluster info"
+  ansible.builtin.debug:
+    msg: "Updating Flannel on {{ cluster.name }} with pod_network_cidr: {{ cluster.pod_network_cidr }}"
+
+- name: "{{ cluster.name }} - Download Flannel manifest"
+  ansible.builtin.get_url:
+    url: "https://github.com/flannel-io/flannel/releases/download/v{{ flannel_version }}/kube-flannel.yml"
+    dest: "/tmp/kube-flannel-{{ cluster.name }}.yml"
+    mode: '0644'
+    force: true
+
+- name: "{{ cluster.name }} - Update Flannel network CIDR"
+  ansible.builtin.replace:
+    path: "/tmp/kube-flannel-{{ cluster.name }}.yml"
+    regexp: '10\.244\.0\.0/16'
+    replace: "{{ cluster.pod_network_cidr }}"
+
+- name: "{{ cluster.name }} - Apply updated Flannel manifest"
+  ansible.builtin.command: >
+    kubectl apply -f /tmp/kube-flannel-{{ cluster.name }}.yml
+  environment:
+    KUBECONFIG: "{{ kubeconfig_dir }}/{{ cluster.kubeconfig }}"
+  register: flannel_apply
+  changed_when: "'configured' in flannel_apply.stdout"
+
+- name: "{{ cluster.name }} - Restart Flannel pods to pick up new config"
+  ansible.builtin.command: >
+    kubectl rollout restart daemonset kube-flannel-ds -n kube-flannel
+  environment:
+    KUBECONFIG: "{{ kubeconfig_dir }}/{{ cluster.kubeconfig }}"
+  register: flannel_restart
+
+- name: "{{ cluster.name }} - Wait for Flannel pods to be ready"
+  ansible.builtin.command: >
+    kubectl rollout status daemonset kube-flannel-ds -n kube-flannel --timeout=120s
+  environment:
+    KUBECONFIG: "{{ kubeconfig_dir }}/{{ cluster.kubeconfig }}"
+  changed_when: false
+
+- name: "{{ cluster.name }} - Verify Flannel ConfigMap CIDR"
+  ansible.builtin.shell: |
+    kubectl get configmap kube-flannel-cfg -n kube-flannel -o jsonpath='{.data.net-conf\.json}' | grep -o '"Network": "[^"]*"'
+  environment:
+    KUBECONFIG: "{{ kubeconfig_dir }}/{{ cluster.kubeconfig }}"
+  register: flannel_config
+  changed_when: false
+
+- name: "{{ cluster.name }} - Display updated Flannel config"
+  ansible.builtin.debug:
+    msg: "{{ cluster.name }} Flannel config: {{ flannel_config.stdout }}"
+
+- name: "{{ cluster.name }} - Cleanup temp manifest"
+  ansible.builtin.file:
+    path: "/tmp/kube-flannel-{{ cluster.name }}.yml"
+    state: absent
