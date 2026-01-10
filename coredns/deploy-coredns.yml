@@ -106,15 +106,6 @@
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Generate hosts file content
-      ansible.builtin.set_fact:
-        hosts_content: |
-          {% for record in dns_records %}
-          {% for hostname in record.hostnames %}
-          {{ record.ip }} {{ hostname }}.{{ dns_domain }}
-          {% endfor %}
-          {% endfor %}
-
     - name: Create CoreDNS ConfigMap
       ansible.builtin.shell: |
         cat <<'EOF' | kubectl apply -f -
@@ -126,9 +117,22 @@
         data:
           Corefile: |
             {{ dns_domain }}:53 {
-                hosts /etc/coredns/hosts {
+                hosts {
+                    {% for record in dns_records %}
+                    {% for hostname in record.hostnames %}
+                    {{ record.ip }} {{ hostname }}.{{ dns_domain }}
+                    {% endfor %}
+                    {% endfor %}
                     fallthrough
                 }
+                {% for wildcard in wildcard_records | default([]) %}
+                template IN A {
+                    match ^[a-zA-Z0-9-]+\.{{ wildcard.zone }}\.{{ dns_domain }}\.$
+                    answer "{{ '{{' }} .Name {{ '}}' }} 60 IN A {{ wildcard.ip }}"
+                    fallthrough
+                }
+                {% endfor %}
+                forward . {{ upstream_dns | join(' ') }}
                 log
                 errors
                 cache 30
@@ -142,14 +146,6 @@
                 health :8080
                 ready :8181
             }
-          hosts: |
-            # Auto-generated DNS records for {{ dns_domain }}
-            # Managed by Ansible - do not edit manually
-            {% for record in dns_records %}
-            {% for hostname in record.hostnames %}
-            {{ record.ip }} {{ hostname }}.{{ dns_domain }}
-            {% endfor %}
-            {% endfor %}
         EOF
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
@@ -215,8 +211,6 @@
                   items:
                   - key: Corefile
                     path: Corefile
-                  - key: hosts
-                    path: hosts
         EOF
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
@@ -304,14 +298,6 @@
       changed_when: false
       failed_when: false
 
-    - name: Get all DNS records configured
-      ansible.builtin.shell: |
-        kubectl get configmap coredns-external -n {{ coredns_namespace }} -o jsonpath='{.data.hosts}'
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-      register: dns_hosts
-      changed_when: false
-
     - name: Display DNS verification results
       ansible.builtin.debug:
         msg:
@@ -326,8 +312,8 @@
           - "  Internal (pfsense.{{ dns_domain }}): {{ internal_test.stdout | default('FAILED') }}"
           - "  External (google.com): {{ external_test.stdout_lines[0] | default('FAILED') }}"
           - ""
-          - "Configured Records:"
-          - "{{ dns_hosts.stdout }}"
+          - "Configured Records (inline in Corefile):"
+          - "{% for record in dns_records %}{% for hostname in record.hostnames %}  {{ record.ip }} {{ hostname }}.{{ dns_domain }}{% endfor %}{% endfor %}"
           - ""
           - "=============================================="
           - "Usage:"

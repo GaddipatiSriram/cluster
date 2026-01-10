@@ -1,0 +1,29 @@
+---
+# OKD DNS Records Configuration
+# =============================================================================
+# These records are used by the OKD cluster and can be updated independently
+# by running: ansible-playbook playbooks/update-okd-dns.yml
+#
+# The IPI installer requires these DNS records to exist before installation:
+#   - api.<cluster>.<domain>     -> API VIP
+#   - api-int.<cluster>.<domain> -> API VIP (internal)
+#   - *.apps.<cluster>.<domain>  -> Ingress VIP (wildcard)
+# =============================================================================
+
+# OKD Cluster Configuration
+okd_cluster_name: "mgmt-devops-okd"
+okd_api_vip: "10.10.2.50"
+okd_ingress_vip: "10.10.2.51"
+
+# OKD DNS Records (A records)
+okd_dns_records:
+  # API endpoint (control plane)
+  - ip: "{{ okd_api_vip }}"
+    hostnames:
+      - "api.{{ okd_cluster_name }}"
+      - "api-int.{{ okd_cluster_name }}"
+
+# OKD Wildcard Records (for OpenShift routes/ingress)
+okd_wildcard_records:
+  - zone: "apps.{{ okd_cluster_name }}"
+    ip: "{{ okd_ingress_vip }}"

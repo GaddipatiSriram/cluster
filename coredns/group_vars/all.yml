@@ -70,6 +70,13 @@ dns_records:
       - "ns1"
 
 # =============================================================================
+# Wildcard DNS Records
+# =============================================================================
+# Base wildcard records (non-OKD)
+# OKD wildcard records are defined in group_vars/okd.yml
+wildcard_records: []
+
+# =============================================================================
 # Kubeconfig (path on control plane node)
 # =============================================================================
 kubeconfig_path: "/etc/kubernetes/admin.conf"

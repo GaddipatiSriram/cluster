@@ -1,0 +1,130 @@
+---
+# update-okd-dns.yml - Update CoreDNS with OKD DNS records
+#
+# This playbook updates the CoreDNS ConfigMap to include OKD-specific DNS records.
+# It can be called standalone or from the OKD installation playbooks.
+#
+# Usage:
+#   ansible-playbook -i inventory.ini playbooks/update-okd-dns.yml
+#
+# Override VIPs:
+#   ansible-playbook -i inventory.ini playbooks/update-okd-dns.yml \
+#     -e okd_api_vip=10.10.2.50 -e okd_ingress_vip=10.10.2.51
+#
+# Remove OKD DNS (cleanup):
+#   ansible-playbook -i inventory.ini playbooks/update-okd-dns.yml -e okd_dns_state=absent
+
+- name: Update CoreDNS with OKD DNS Records
+  hosts: k8s_control_plane
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/okd.yml
+
+  vars:
+    okd_dns_state: present  # Set to 'absent' to remove OKD records
+
+  tasks:
+    - name: Build combined DNS records
+      ansible.builtin.set_fact:
+        combined_dns_records: "{{ dns_records + (okd_dns_records if okd_dns_state == 'present' else []) }}"
+        combined_wildcard_records: "{{ (wildcard_records | default([])) + (okd_wildcard_records if okd_dns_state == 'present' else []) }}"
+
+    - name: Display DNS configuration
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "OKD DNS Configuration"
+          - "=============================================="
+          - "State: {{ okd_dns_state }}"
+          - "API VIP: {{ okd_api_vip }}"
+          - "Ingress VIP: {{ okd_ingress_vip }}"
+          - "Cluster: {{ okd_cluster_name }}.{{ dns_domain }}"
+          - "=============================================="
+
+    - name: Update CoreDNS ConfigMap
+      ansible.builtin.shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: coredns-external
+          namespace: {{ coredns_namespace }}
+        data:
+          Corefile: |
+            {{ dns_domain }}:53 {
+                hosts {
+                    {% for record in combined_dns_records %}
+                    {% for hostname in record.hostnames %}
+                    {{ record.ip }} {{ hostname }}.{{ dns_domain }}
+                    {% endfor %}
+                    {% endfor %}
+                    fallthrough
+                }
+                {% for wildcard in combined_wildcard_records %}
+                template IN A {
+                    match ^[a-zA-Z0-9-]+\.{{ wildcard.zone }}\.{{ dns_domain }}\.$
+                    answer "{{ '{{' }} .Name {{ '}}' }} 60 IN A {{ wildcard.ip }}"
+                    fallthrough
+                }
+                {% endfor %}
+                forward . {{ upstream_dns | join(' ') }}
+                log
+                errors
+                cache 30
+            }
+
+            .:53 {
+                forward . {{ upstream_dns | join(' ') }}
+                cache 30
+                log
+                errors
+                health :8080
+                ready :8181
+            }
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: configmap_update
+
+    - name: Restart CoreDNS pods to pick up changes
+      ansible.builtin.shell: |
+        kubectl rollout restart deployment/coredns-external -n {{ coredns_namespace }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: configmap_update is changed
+
+    - name: Wait for CoreDNS pods to be ready
+      ansible.builtin.shell: |
+        kubectl rollout status deployment/coredns-external -n {{ coredns_namespace }} --timeout=60s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: configmap_update is changed
+
+    - name: Verify OKD DNS records
+      ansible.builtin.shell: |
+        dig @{{ coredns_lb_ip }} api.{{ okd_cluster_name }}.{{ dns_domain }} +short
+      register: dns_verify
+      changed_when: false
+      failed_when: false
+      when: okd_dns_state == 'present'
+
+    - name: Display verification results
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "OKD DNS Update Complete"
+          - "=============================================="
+          - "DNS Server: {{ coredns_lb_ip }}"
+          - ""
+          - "OKD Records {{ 'Added' if okd_dns_state == 'present' else 'Removed' }}:"
+          - "  api.{{ okd_cluster_name }}.{{ dns_domain }} -> {{ okd_api_vip if okd_dns_state == 'present' else 'REMOVED' }}"
+          - "  api-int.{{ okd_cluster_name }}.{{ dns_domain }} -> {{ okd_api_vip if okd_dns_state == 'present' else 'REMOVED' }}"
+          - "  *.apps.{{ okd_cluster_name }}.{{ dns_domain }} -> {{ okd_ingress_vip if okd_dns_state == 'present' else 'REMOVED' }}"
+          - ""
+          - "Verification (api.{{ okd_cluster_name }}.{{ dns_domain }}):"
+          - "  {{ dns_verify.stdout | default('N/A') }}"
+          - "=============================================="
+      when: okd_dns_state == 'present'
