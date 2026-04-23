@@ -1,0 +1,178 @@
+---
+# register-argocd.yml - Register this cluster with one or more ArgoCD instances on OKD
+#
+# Called by bootstrap-k8s.yml Phase 8 (or standalone with --tags argocd).
+# Reads:
+#   - local_kubeconfig_path   (target cluster kubeconfig on the control host, from group_vars)
+#   - cluster_name            (target cluster display name)
+#   - api_server_advertise_address  (target cluster API IP, from group_vars)
+#   - argocd_register         (bool, default true; skip if false)
+#   - argocd_instances        (list of ArgoCD namespaces, e.g. [argocd-sre, argocd-devops])
+#   - okd_kubeconfig          (kubeconfig with 'admin' context targeting OKD)
+#   - cluster_labels          (dict merged into the cluster Secret's metadata.labels)
+#   - cluster_labels_defaults (dict defaults from group_vars/all.yml)
+#
+# Produces on the TARGET cluster:
+#   - ServiceAccount kube-system/argocd-manager
+#   - ClusterRoleBinding → cluster-admin
+#   - Secret kube-system/argocd-manager-token (kubernetes.io/service-account-token)
+#
+# Produces on OKD (per entry in argocd_instances):
+#   - Secret <ns>/<argocd_cluster_name> labeled argocd.argoproj.io/secret-type=cluster
+
+- name: "Phase 8 - Display registration info"
+  ansible.builtin.debug:
+    msg:
+      - "Registering {{ argocd_cluster_name }} with ArgoCD instances: {{ argocd_instances | join(', ') }}"
+      - "Target cluster kubeconfig: {{ local_kubeconfig_path }}"
+      - "OKD kubeconfig: {{ okd_kubeconfig }}"
+      - "Labels: {{ (cluster_labels_defaults | default({})) | combine(cluster_labels | default({})) }}"
+  vars:
+    argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
+
+- name: "Phase 8 - Create argocd-manager ServiceAccount on target cluster"
+  ansible.builtin.shell: |
+    kubectl apply -f - <<'EOF'
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: argocd-manager
+      namespace: kube-system
+    EOF
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: sa_apply
+  changed_when: "'created' in sa_apply.stdout or 'configured' in sa_apply.stdout"
+
+- name: "Phase 8 - Bind argocd-manager to cluster-admin on target cluster"
+  ansible.builtin.shell: |
+    kubectl apply -f - <<'EOF'
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: argocd-manager
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: cluster-admin
+    subjects:
+    - kind: ServiceAccount
+      name: argocd-manager
+      namespace: kube-system
+    EOF
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: crb_apply
+  changed_when: "'created' in crb_apply.stdout or 'configured' in crb_apply.stdout"
+
+- name: "Phase 8 - Create long-lived token Secret for argocd-manager (k8s >= 1.24)"
+  ansible.builtin.shell: |
+    kubectl apply -f - <<'EOF'
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: argocd-manager-token
+      namespace: kube-system
+      annotations:
+        kubernetes.io/service-account.name: argocd-manager
+    type: kubernetes.io/service-account-token
+    EOF
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: token_secret_apply
+  changed_when: "'created' in token_secret_apply.stdout"
+
+- name: "Phase 8 - Wait for SA token to be populated"
+  ansible.builtin.shell: |
+    kubectl get secret argocd-manager-token -n kube-system \
+      -o jsonpath='{.data.token}'
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: sa_token_raw
+  retries: 15
+  delay: 2
+  until: sa_token_raw.stdout | length > 0
+  changed_when: false
+
+- name: "Phase 8 - Extract CA cert from SA token Secret"
+  ansible.builtin.shell: |
+    kubectl get secret argocd-manager-token -n kube-system \
+      -o jsonpath='{.data.ca\.crt}'
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: sa_ca_raw
+  changed_when: false
+
+- name: "Phase 8 - Set decoded token + CA facts"
+  ansible.builtin.set_fact:
+    argocd_sa_token: "{{ sa_token_raw.stdout | b64decode }}"
+    argocd_sa_ca_data: "{{ sa_ca_raw.stdout }}"   # keep base64-encoded for the cluster Secret config
+
+- name: "Phase 8 - Build merged labels dict"
+  ansible.builtin.set_fact:
+    argocd_merged_labels: >-
+      {{ {'argocd.argoproj.io/secret-type': 'cluster'}
+         | combine(cluster_labels_defaults | default({}))
+         | combine(cluster_labels | default({})) }}
+
+- name: "Phase 8 - Render ArgoCD cluster Secret to temp file"
+  ansible.builtin.copy:
+    dest: "/tmp/argocd-cluster-{{ argocd_cluster_name }}.yaml"
+    mode: '0600'
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ argocd_cluster_name }}
+        labels:
+      {% for k, v in argocd_merged_labels.items() %}
+          {{ k }}: "{{ v }}"
+      {% endfor %}
+      type: Opaque
+      stringData:
+        name: {{ argocd_cluster_name }}
+        server: https://{{ api_server_advertise_address }}:6443
+        config: |
+          {
+            "bearerToken": "{{ argocd_sa_token }}",
+            "tlsClientConfig": {
+              "insecure": false,
+              "caData": "{{ argocd_sa_ca_data }}"
+            }
+          }
+  vars:
+    argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
+  no_log: true
+
+- name: "Phase 8 - Apply ArgoCD cluster Secret to each ArgoCD namespace on OKD"
+  ansible.builtin.shell: |
+    kubectl apply -n {{ item }} -f /tmp/argocd-cluster-{{ argocd_cluster_name }}.yaml
+  environment:
+    KUBECONFIG: "{{ okd_kubeconfig }}"
+    KUBECTL_CONTEXT: admin
+  register: argocd_secret_apply
+  changed_when: "'created' in argocd_secret_apply.stdout or 'configured' in argocd_secret_apply.stdout"
+  loop: "{{ argocd_instances }}"
+  vars:
+    argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
+
+- name: "Phase 8 - Clean up rendered Secret"
+  ansible.builtin.file:
+    path: "/tmp/argocd-cluster-{{ argocd_cluster_name }}.yaml"
+    state: absent
+  vars:
+    argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
+
+- name: "Phase 8 - Display registration result"
+  ansible.builtin.debug:
+    msg:
+      - "=============================================="
+      - "ArgoCD Registration Complete"
+      - "=============================================="
+      - "Cluster '{{ argocd_cluster_name }}' registered in: {{ argocd_instances | join(', ') }}"
+      - "Verify with:"
+      - "  kubectl --context admin get secret -n argocd-sre -l argocd.argoproj.io/secret-type=cluster"
+      - "  kubectl --context admin get secret -n argocd-devops -l argocd.argoproj.io/secret-type=cluster"
+      - "=============================================="
+  vars:
+    argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"

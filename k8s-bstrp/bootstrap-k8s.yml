@@ -41,6 +41,10 @@
             -i inventory/mgmt-core.ini
             -i inventory/mgmt-devops.ini
             -i inventory/mgmt-observability.ini
+            -i inventory/mgmt-forge.ini
+            -i inventory/dev-web.ini
+            -i inventory/dev-apps.ini
+            -i inventory/dev-data.ini
         success_msg: "Loading configuration for: {{ cluster_vars_file }}"
 
     - name: Load cluster-specific variables
@@ -441,9 +445,23 @@
         delay: 10
         timeout: 300
 
-    - name: Install Flannel CNI
+    - name: Download Flannel manifest
       ansible.builtin.command: >
-        kubectl apply -f https://github.com/flannel-io/flannel/releases/download/v{{ flannel_version }}/kube-flannel.yml
+        curl -fsSL -o /tmp/kube-flannel-{{ cluster_name }}.yml
+        https://github.com/flannel-io/flannel/releases/download/v{{ flannel_version }}/kube-flannel.yml
+      when: cni_plugin == "flannel"
+      changed_when: true
+
+    - name: Replace default 10.244.0.0/16 with cluster-specific pod CIDR
+      ansible.builtin.replace:
+        path: "/tmp/kube-flannel-{{ cluster_name }}.yml"
+        regexp: '10\.244\.0\.0/16'
+        replace: "{{ pod_network_cidr }}"
+      when: cni_plugin == "flannel"
+
+    - name: Install Flannel CNI (with cluster pod CIDR baked in)
+      ansible.builtin.command: >
+        kubectl apply -f /tmp/kube-flannel-{{ cluster_name }}.yml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       when: cni_plugin == "flannel"
@@ -615,3 +633,40 @@
           - "  export KUBECONFIG={{ local_kubeconfig_path }}"
           - "  kubectl get nodes"
           - "=============================================="
+
+
+# =============================================================================
+# PHASE 8: Register cluster with ArgoCD instances on OKD
+# =============================================================================
+- name: "Phase 8: Register cluster with ArgoCD"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [argocd, phase8, all]
+
+  tasks:
+    - name: Resolve cluster_vars_file from k8s_cluster inventory
+      ansible.builtin.set_fact:
+        cluster_vars_file: "{{ hostvars[groups['k8s_cluster'][0]]['cluster_vars_file'] }}"
+
+    - name: Load cluster-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ cluster_vars_file }}.yml"
+
+    - name: Load common defaults
+      ansible.builtin.include_vars:
+        file: "group_vars/all.yml"
+
+    - name: Propagate target cluster API from first control plane
+      ansible.builtin.set_fact:
+        api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+
+    - name: Skip Phase 8 if argocd_register is false
+      ansible.builtin.debug:
+        msg: "Skipping ArgoCD registration (argocd_register=false for {{ cluster_name }})"
+      when: not (argocd_register | default(true))
+
+    - name: Register with ArgoCD
+      ansible.builtin.include_tasks:
+        file: tasks/register-argocd.yml
+      when: argocd_register | default(true)

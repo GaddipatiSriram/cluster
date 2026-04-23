@@ -69,12 +69,31 @@ dns_records:
       - "dns"
       - "ns1"
 
+  # mgmt-forge Kubernetes nodes (VLAN 14, 10.10.5.0/24)
+  - ip: "10.10.5.103"
+    hostnames:
+      - "mgmt-forge-01"
+  - ip: "10.10.5.104"
+    hostnames:
+      - "mgmt-forge-02"
+  - ip: "10.10.5.105"
+    hostnames:
+      - "mgmt-forge-03"
+
+  # mgmt-forge ingress VIP (MetalLB)
+  - ip: "10.10.5.201"
+    hostnames:
+      - "ingress.mgmt-forge"
+
 # =============================================================================
 # Wildcard DNS Records
 # =============================================================================
 # Base wildcard records (non-OKD)
 # OKD wildcard records are defined in group_vars/okd.yml
-wildcard_records: []
+wildcard_records:
+  # Forge cluster apps: *.apps.mgmt-forge.engatwork.com → ingress-nginx VIP
+  - zone: "apps.mgmt-forge"
+    ip: "10.10.5.201"
 
 # =============================================================================
 # Kubeconfig (path on control plane node)

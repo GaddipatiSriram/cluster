@@ -1,0 +1,76 @@
+---
+# Kubernetes Cluster Configuration - Management Forge
+# =============================================================================
+# Software forge cluster for: GitLab, Harbor, SonarQube
+# Network: Mgmt-Forge-Net (VLAN 14, 10.10.5.0/24)
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-forge.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-forge-cluster"
+cluster_type: "mgmt-forge"
+cluster_description: "Software forge - GitLab, Harbor, SonarQube"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+network_name: "Mgmt-Forge-Net"
+network_vlan: 14
+network_subnet: "10.10.5.0/24"
+network_gateway: "10.10.5.1"
+
+# Pod network CIDR (unique per cluster to avoid overlap)
+pod_network_cidr: "10.250.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.102.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-mgmt-forge"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.5.200-10.10.5.220"
+metallb_pool_name: "mgmt-forge-pool"
+
+# =============================================================================
+# DNS CONFIGURATION
+# =============================================================================
+coredns_enabled: true
+coredns_lb_ip: "10.10.5.200"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "gitlab"
+    description: "Git source code hosting and CI/CD"
+  - name: "harbor"
+    description: "Container image registry"
+  - name: "sonarqube"
+    description: "Static code analysis and quality gates"
+
+# =============================================================================
+# ARGOCD LABELS
+# =============================================================================
+# Merged with cluster_labels_defaults from group_vars/all.yml, applied to the
+# ArgoCD cluster Secret(s) on OKD by Phase 8.
+# Used by ApplicationSet cluster-generator selectors to decide what deploys here.
+cluster_labels:
+  tier: mgmt
+  role: forge
+  env: nonprod
+  storage: none

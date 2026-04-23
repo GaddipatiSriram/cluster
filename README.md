@@ -122,6 +122,7 @@ CoreDNS provides DNS resolution for:
 | `*.engatwork.com` | Various | Internal services |
 | `api.mgmt-devops-okd.engatwork.com` | 10.10.2.50 | OKD API |
 | `*.apps.mgmt-devops-okd.engatwork.com` | 10.10.2.51 | OKD Ingress |
+| `*.apps.mgmt-forge.engatwork.com` | 10.10.5.201 | mgmt-forge ingress-nginx (MetalLB) |
 
 ### Update OKD DNS Records
 
@@ -142,8 +143,45 @@ ansible-playbook playbooks/update-okd-dns.yml \
 | CNI | Flannel |
 | Load Balancer | MetalLB |
 | DNS VIP | 10.10.1.200 |
-| Pod CIDR | 10.244.0.0/16 |
-| Service CIDR | 10.96.0.0/12 |
+| Pod CIDR | per-cluster (see table below) |
+| Service CIDR | per-cluster |
+
+### Supported Clusters
+
+Each cluster has its own inventory (`k8s-bstrp/inventory/<name>.ini`) and
+group_vars file (`k8s-bstrp/group_vars/<name>.yml`). Pod CIDRs are unique per
+cluster so the OKD control plane can talk to every workload without overlap —
+`bootstrap-k8s.yml` downloads the Flannel manifest and rewrites the default
+`10.244.0.0/16` to the cluster's `pod_network_cidr` before applying.
+
+| Cluster            | VLAN | Subnet          | Pod CIDR        | Purpose                       |
+|--------------------|------|-----------------|-----------------|-------------------------------|
+| mgmt-core          | 10   | 10.10.1.0/24    | 10.244.0.0/16   | CoreDNS, MetalLB, base infra  |
+| mgmt-devops        | 11   | 10.10.2.0/24    | 10.245.0.0/16   | CI/CD tooling                 |
+| mgmt-observability | 12   | 10.10.3.0/24    | 10.246.0.0/16   | Prometheus, Loki, Grafana     |
+| mgmt-forge         | 14   | 10.10.5.0/24    | 10.250.0.0/16   | GitLab, Harbor, SonarQube     |
+| dev-web            | 20   | 10.20.1.0/24    | 10.247.0.0/16   | Dev web tier                  |
+| dev-apps           | 21   | 10.20.2.0/24    | 10.248.0.0/16   | Dev apps tier                 |
+| dev-data           | 22   | 10.20.3.0/24    | 10.249.0.0/16   | Dev data tier                 |
+
+### Phase 8 — ArgoCD Registration
+
+After the cluster is up, `bootstrap-k8s.yml` runs a localhost play that
+registers the new cluster with the ArgoCD instances running on the OKD
+management cluster (`argocd-sre` and `argocd-devops` namespaces — see the
+`okd` repo phase 8). It creates a `kube-system/argocd-manager` ServiceAccount
+bound to `cluster-admin` on the target cluster, issues a long-lived SA token
+Secret, and applies a labeled `type: cluster` Secret to each ArgoCD namespace
+on OKD.
+
+Labels from `group_vars/<cluster>.yml:cluster_labels` (merged with
+`group_vars/all.yml:cluster_labels_defaults`) drive ApplicationSet
+cluster-generator selectors — that's how a ForgeApp AppSet picks
+mgmt-forge without naming it.
+
+Disable on a per-cluster basis by setting `argocd_register: false` in the
+cluster's group_vars (e.g. mgmt-core, mgmt-storage — foundational clusters
+we keep out of GitOps).
 
 ## Testing DNS
 

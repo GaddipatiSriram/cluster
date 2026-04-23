@@ -87,3 +87,26 @@ token_ttl: "24h"
 # DOMAIN SETTINGS
 # =============================================================================
 dns_domain: "engatwork.com"
+
+# =============================================================================
+# ARGOCD REGISTRATION (Phase 8)
+# =============================================================================
+# Set argocd_register=false to skip Phase 8 on a given cluster (e.g. mgmt-core,
+# mgmt-storage — foundational clusters we deliberately don't manage via GitOps).
+argocd_register: true
+
+# ArgoCD namespaces on OKD to register the cluster with.
+# One cluster Secret will be created per entry.
+argocd_instances:
+  - argocd-sre
+  - argocd-devops
+
+# Kubeconfig on the control host that has admin access to the OKD cluster
+# where ArgoCD runs.
+okd_kubeconfig: "/root/.kube/config"
+
+# Labels applied to every ArgoCD cluster Secret (merged with per-cluster labels).
+# These support ApplicationSet cluster-generator selectors.
+cluster_labels_defaults:
+  managed-by: k8s-bstrp
+  k8s-version: "1.31.4"

@@ -28,4 +28,8 @@ clusters:
     kubeconfig: "kubeconfig-dev-data"
     pod_network_cidr: "10.249.0.0/16"
 
+  - name: mgmt-forge
+    kubeconfig: "kubeconfig-mgmt-forge"
+    pod_network_cidr: "10.250.0.0/16"
+
 # mgmt-core is excluded - it already uses 10.244.0.0/16 (Flannel default)
