@@ -63,6 +63,19 @@ prometheus_retention: "15d"
 loki_retention: "30d"
 
 # =============================================================================
+# ARGOCD REGISTRATION LABELS
+# =============================================================================
+# Merged with cluster_labels_defaults from group_vars/all.yml; applied to
+# the cluster Secret created in each argocd_instances namespace during
+# Phase 8. Drives Pattern A (tier=mgmt, role NotIn [storage]) and
+# Pattern C (role=observ) ApplicationSet cluster-generator selectors.
+cluster_labels:
+  tier: mgmt
+  role: observ
+  env: nonprod
+  storage: ceph-rbd
+
+# =============================================================================
 # CLUSTER-SPECIFIC SERVICES
 # =============================================================================
 # Services to be deployed on this cluster
