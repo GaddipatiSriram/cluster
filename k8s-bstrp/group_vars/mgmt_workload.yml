@@ -1,0 +1,113 @@
+---
+# Kubernetes Cluster Configuration - Management Workload
+# =============================================================================
+# Workload-plane cluster: ARC runners + ephemeral workloads + Pattern A baseline.
+# Network: Mgmt-DevOps-Net (VLAN 11, 10.10.2.0/24) — co-located with OKD.
+#
+# Role split:
+#   OKD (control plane): ArgoCD, Crossplane, Gateway control plane,
+#                        Keycloak (eventually), Backstage
+#   mgmt-workload (workload plane): ARC controller + runners,
+#                                   Pattern A baseline, ephemeral workloads
+#
+# ARC sits here because it isn't cross-cluster-capable — listener creates
+# runners via in-cluster API only. Tools that ARE cross-cluster-capable
+# (ArgoCD, Crossplane, Gateway xDS) keep their control plane on OKD and
+# dispatch workloads here via remote kubeconfig / cluster Secret.
+#
+# Single-node topology (1 control-plane node, untainted, also runs workloads).
+# Accepted SPOF for the workload plane until 2nd oVirt host arrives.
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-workload.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-workload-cluster"
+cluster_type: "mgmt-workload"
+cluster_description: "Workload plane - ARC runners and ephemeral workloads"
+
+# =============================================================================
+# SINGLE-NODE TOGGLE
+# =============================================================================
+# Tells bootstrap-k8s.yml to skip Phase 6 (worker join) and untaint the
+# control-plane node in Phase 7 so workload pods can schedule on it.
+single_node_cluster: true
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+network_name: "Mgmt-DevOps-Net"
+network_vlan: 11
+network_subnet: "10.10.2.0/24"
+network_gateway: "10.10.2.1"
+
+# Pod network CIDR (unique per cluster — avoids cross-cluster overlap)
+pod_network_cidr: "10.251.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.103.0.0/16"
+
+# API server advertise address (the single control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/cluster/kubeconfig-mgmt-workload"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+# Pool .211-.220 — leaves .200-.210 reserved in case OKD ever adds MetalLB.
+# OKD itself runs at .110-.112 with API VIP .50 and ingress VIP .51 (static
+# in OpenShift's MachineNetwork, not via Kea).
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.2.211-10.10.2.220"
+metallb_pool_name: "mgmt-workload-pool"
+
+# =============================================================================
+# INGRESS CONFIGURATION
+# =============================================================================
+ingress_enabled: true
+ingress_controller: "nginx"
+ingress_lb_ip: "10.10.2.211"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "actions-runner-controller"
+    description: "GitHub Actions self-hosted runners (controller + runners)"
+    namespace: "arc-systems"
+  - name: "arc-runners-trusted"
+    description: "ARC runners with cluster RBAC for deploy jobs"
+    namespace: "arc-runners-trusted"
+  - name: "arc-runners-untrusted"
+    description: "ARC runners locked down for PR builds (no cluster RBAC)"
+    namespace: "arc-runners-untrusted"
+
+# =============================================================================
+# ARGOCD REGISTRATION LABELS
+# =============================================================================
+# Merged with cluster_labels_defaults from group_vars/all.yml; applied to
+# the cluster Secret in each argocd_instances namespace during Phase 8.
+#
+# `role: workload` is a new label introduced for this cluster. Pattern A
+# AppSets (cert-manager, ingress-nginx, ESO, trivy, rook-ceph-external)
+# already match `tier In [mgmt,dev], role NotIn [storage]` so they pick
+# this cluster up without selector changes.
+#
+# The ARC AppSet (to be authored at argo/sre/forge/actions-runner-controller-appset.yaml)
+# will start with `matchLabels: { role: workload }` to land *only* here,
+# broadening to Pattern A later if other workload clusters need their
+# own runners.
+cluster_labels:
+  tier: mgmt
+  role: workload
+  env: nonprod
+  storage: ceph-rbd
