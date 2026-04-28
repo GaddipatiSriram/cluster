@@ -31,7 +31,7 @@ pieces works, and how ArgoCD fits in as a central controller that watches
 a fleet of clusters it didn't create.
 
 We'll map everything back to our Pattern A/B/C/D selectors at the end
-(see [`argo/README.md`](../argo/README.md) for those).
+(see [`argo-applications/README.md`](../layers/argo-applications/README.md) for those).
 
 ---
 
@@ -353,7 +353,7 @@ In the AWS-recommended **EKS Blueprints for Terraform** flow, these are
 all wired up as modules that emit outputs consumed by each other (e.g.
 `aws-load-balancer-controller` module depends on the `vpc-cni` addon
 being installed). Blueprints is the closest analogue to our
-`forge/` + `argo/sre/forge/` stack — a pre-wired "platform in a box."
+`forge/` + `argo-applications/sre/forge/` stack — a pre-wired "platform in a box."
 
 ### (7) GitOps handoff
 
@@ -650,7 +650,7 @@ and `ovirt-setup/playbooks/` over the next few sessions:
    EKS Blueprints' selector patterns. Keep them tight; don't let
    per-cluster ad-hoc labels creep in. This is what makes Pattern A/B/C/D
    selectors scale.
-4. **Explicit addon catalog** — today `argo/sre/forge/` hosts one
+4. **Explicit addon catalog** — today `argo-applications/sre/forge/` hosts one
    AppSet per addon. Consider a single "platform-addons" AppSet with
    a Git file generator over a manifest of pinned versions, so upgrades
    are "edit one file → ArgoCD rolls the fleet." That's the EKS addon
@@ -672,9 +672,9 @@ rebuild + disk-prep refactor. That's its own plan.
   kubeadm playbook, the other half of this contrast.
 - [`cluster/k8s-bstrp/docs/QA.md`](./k8s-bstrp/docs/QA.md) — bootstrap
   Q&A.
-- [`argo/README.md`](../argo/README.md) — selector patterns A/B/C/D and
+- [`argo-applications/README.md`](../layers/argo-applications/README.md) — selector patterns A/B/C/D and
   the service catalog they drive.
-- [`observability/README.md`](../observability/README.md) — where the
+- [`observability/README.md`](../layers/observability/README.md) — where the
   mgmt-observability cluster fits into the estate, post-rebuild.
 - **EKS Blueprints**: https://aws-ia.github.io/terraform-aws-eks-blueprints/
 - **EKS Best Practices Guide**: https://aws.github.io/aws-eks-best-practices/
