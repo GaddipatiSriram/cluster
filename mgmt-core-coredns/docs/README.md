@@ -36,7 +36,7 @@ This Ansible playbook deploys CoreDNS as an external DNS server on the Kubernete
 ## Files
 
 ```
-coredns/
+mgmt-core-coredns/
 ├── deploy-coredns.yml     # Main deployment playbook
 ├── inventory.ini          # Control plane target
 ├── group_vars/all.yml     # DNS records and configuration

@@ -6,7 +6,7 @@ Ansible playbooks for deploying Kubernetes clusters and core services (CoreDNS, 
 
 This project contains automation for:
 - **k8s-bstrp**: Kubernetes cluster bootstrap using kubeadm
-- **coredns**: CoreDNS deployment for internal DNS resolution
+- **mgmt-core-coredns**: External CoreDNS deployment on the mgmt-core cluster (authoritative DNS for `engatwork.com`)
 
 ## Architecture
 
@@ -44,9 +44,9 @@ This project contains automation for:
 cluster/
 ├── README.md
 ├── .gitignore
-├── coredns/                 # CoreDNS deployment
+├── mgmt-core-coredns/       # External CoreDNS (mgmt-core only)
 │   ├── ansible.cfg
-│   ├── inventory.ini
+│   ├── inventory.ini        # Targets mgmt-core-01
 │   ├── deploy-coredns.yml   # Main deployment playbook
 │   ├── group_vars/
 │   │   ├── all.yml          # DNS records configuration
@@ -83,10 +83,10 @@ vi group_vars/all.yml
 ansible-playbook bootstrap-k8s.yml
 ```
 
-### 2. Deploy CoreDNS
+### 2. Deploy CoreDNS (mgmt-core only)
 
 ```bash
-cd coredns
+cd mgmt-core-coredns
 
 # Configure DNS records
 vi group_vars/all.yml
@@ -105,13 +105,15 @@ Kubernetes cluster bootstrap using kubeadm with:
 - MetalLB load balancer
 - Local storage provisioner
 
-### [coredns](coredns/)
+### [mgmt-core-coredns](mgmt-core-coredns/)
 
-CoreDNS deployment for internal DNS:
-- Kubernetes-hosted CoreDNS
+External CoreDNS deployment, scoped to the **mgmt-core** cluster only
+(`inventory.ini` targets `mgmt-core-01`). Provides authoritative DNS for
+`engatwork.com` to every VLAN in the homelab:
+- Kubernetes-hosted CoreDNS on mgmt-core
 - Custom zone files for internal domains
 - OKD cluster DNS integration
-- MetalLB VIP for DNS service
+- MetalLB VIP (`10.10.1.200`) for DNS service
 
 ## DNS Configuration
 
@@ -127,7 +129,7 @@ CoreDNS provides DNS resolution for:
 ### Update OKD DNS Records
 
 ```bash
-cd coredns
+cd mgmt-core-coredns
 ansible-playbook playbooks/update-okd-dns.yml \
   -e okd_cluster_name=mgmt-devops-okd \
   -e okd_api_vip=10.10.2.50 \

@@ -48,9 +48,9 @@ ansible-playbook deploy-coredns.yml --tags verify
 ## Project Structure
 
 ```
-coredns/
+mgmt-core-coredns/
 ├── ansible.cfg           # Ansible configuration
-├── inventory.ini         # Control plane target
+├── inventory.ini         # Control plane target (mgmt-core-01)
 ├── deploy-coredns.yml    # Main deployment playbook
 ├── group_vars/
 │   ├── all.yml           # DNS records and configuration
