@@ -112,3 +112,22 @@ argocd_kubeconfig: "/root/.kube/mgmt-control"
 cluster_labels_defaults:
   managed-by: k8s-bstrp
   k8s-version: "1.31.4"
+
+# =============================================================================
+# VAULT REGISTRATION (Phase 8)
+# =============================================================================
+# Set vault_register=false to skip Vault auth-mount creation for this
+# cluster. By default every cluster gets a per-cluster auth method at
+# auth/kubernetes-<cluster_name>/ on Vault, so workloads on the cluster can
+# authenticate via their SA JWTs.
+vault_register: true
+
+# Vault connection — Vault runs on mgmt-forge in the `vault` namespace.
+# vault_root_token MUST be passed via -e (or extracted from
+# ~/.vault-keys-mgmt-forge.json before invoking). Required for the
+# `vault auth enable` + `vault write auth/.../config` calls.
+vault_kubectl_context: mgmt-forge
+vault_namespace: vault
+vault_leader_pod: vault-0
+vault_reviewer_sa_namespace: kube-system
+vault_reviewer_sa_name: vault-token-reviewer

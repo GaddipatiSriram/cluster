@@ -670,3 +670,13 @@
       ansible.builtin.include_tasks:
         file: tasks/register-argocd.yml
       when: argocd_register | default(true)
+
+    - name: Skip Vault registration if vault_register is false
+      ansible.builtin.debug:
+        msg: "Skipping Vault registration (vault_register=false for {{ cluster_name }})"
+      when: not (vault_register | default(true))
+
+    - name: Register with Vault (per-cluster auth mount)
+      ansible.builtin.include_tasks:
+        file: tasks/register-vault.yml
+      when: vault_register | default(true)

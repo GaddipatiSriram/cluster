@@ -1,0 +1,157 @@
+---
+# register-vault.yml — register this cluster with Vault as a per-cluster
+# Kubernetes auth method. Vault validates SA JWTs from THIS cluster against
+# this cluster's own kube-apiserver via TokenReview, then issues short-lived
+# Vault tokens scoped to whichever role the consumer SA is bound to.
+#
+# Called by bootstrap-k8s.yml Phase 8 (or standalone with --tags vault).
+#
+# Reads (same vars as register-argocd.yml + Vault connection):
+#   - cluster_name              (target cluster display name; mount becomes
+#                                kubernetes-<argocd_cluster_name>)
+#   - local_kubeconfig_path     (target cluster kubeconfig on the control host)
+#   - vault_register            (bool, default true; skip if false)
+#   - vault_kubectl_context     (kubeconfig context where Vault runs, default
+#                                mgmt-forge)
+#   - vault_namespace           (Vault's k8s namespace, default vault)
+#   - vault_leader_pod          (Vault leader pod name, default vault-0)
+#   - vault_root_token          (Vault root token — pass via -e or extract from
+#                                ~/.vault-keys-mgmt-forge.json before invoking)
+#   - vault_reviewer_sa_namespace (default kube-system)
+#   - vault_reviewer_sa_name      (default vault-token-reviewer)
+#
+# Produces on the TARGET cluster:
+#   - ServiceAccount {{ vault_reviewer_sa_namespace }}/{{ vault_reviewer_sa_name }}
+#   - ClusterRoleBinding to system:auth-delegator (TokenReview API)
+#   - Secret {{ vault_reviewer_sa_name }}-token (kubernetes.io/service-account-token)
+#
+# Produces on Vault (mgmt-forge):
+#   - Auth method enabled at auth/kubernetes-<argocd_cluster_name>/
+#   - Mount config: kubernetes_host, kubernetes_ca_cert, token_reviewer_jwt
+#
+# After this, Vault roles created with `mount: kubernetes-<cluster>` (e.g.
+# the `crossplane` role in cplanes/security/secrets/vault/playbooks/configure.yml,
+# or anything later managed via Crossplane vault-config) bind successfully
+# from workloads running on this cluster.
+
+- name: "Phase 8 - Vault: derive mount name from cluster_name"
+  ansible.builtin.set_fact:
+    vault_mount_name: "kubernetes-{{ cluster_name | regex_replace('-cluster$', '') }}"
+
+- name: "Phase 8 - Vault: display registration info"
+  ansible.builtin.debug:
+    msg:
+      - "Registering {{ cluster_name | regex_replace('-cluster$', '') }} with Vault"
+      - "  Mount path:        auth/{{ vault_mount_name }}/"
+      - "  Token-reviewer SA: {{ vault_reviewer_sa_namespace | default('kube-system') }}/{{ vault_reviewer_sa_name | default('vault-token-reviewer') }}"
+      - "  Vault context:     {{ vault_kubectl_context | default('mgmt-forge') }}"
+
+- name: "Phase 8 - Vault: apply token-reviewer SA + RBAC + token Secret on target cluster"
+  ansible.builtin.shell: |
+    kubectl apply -f - <<'EOF'
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}
+      namespace: {{ vault_reviewer_sa_namespace | default('kube-system') }}
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: system:auth-delegator
+    subjects:
+      - kind: ServiceAccount
+        name: {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}
+        namespace: {{ vault_reviewer_sa_namespace | default('kube-system') }}
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}-token
+      namespace: {{ vault_reviewer_sa_namespace | default('kube-system') }}
+      annotations:
+        kubernetes.io/service-account.name: {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}
+    type: kubernetes.io/service-account-token
+    EOF
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: reviewer_apply
+  changed_when: "'created' in reviewer_apply.stdout or 'configured' in reviewer_apply.stdout"
+
+- name: "Phase 8 - Vault: wait for token-reviewer SA token to populate"
+  ansible.builtin.shell: |
+    kubectl get secret {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}-token \
+      -n {{ vault_reviewer_sa_namespace | default('kube-system') }} -o jsonpath='{.data.token}'
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: reviewer_token_raw
+  retries: 15
+  delay: 2
+  until: reviewer_token_raw.stdout | length > 0
+  changed_when: false
+
+- name: "Phase 8 - Vault: extract API URL + CA from target cluster"
+  ansible.builtin.shell:
+    cmd: |
+      set -eo pipefail
+      API=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+      CA=$(kubectl get secret {{ vault_reviewer_sa_name | default('vault-token-reviewer') }}-token \
+        -n {{ vault_reviewer_sa_namespace | default('kube-system') }} -o jsonpath='{.data.ca\.crt}' | base64 -d)
+      printf '{"api":"%s","ca":%s}\n' "$API" "$(echo "$CA" | jq -Rs .)"
+  environment:
+    KUBECONFIG: "{{ local_kubeconfig_path }}"
+  register: cluster_meta
+  changed_when: false
+  no_log: true
+
+- name: "Phase 8 - Vault: set facts"
+  ansible.builtin.set_fact:
+    vault_target_api: "{{ (cluster_meta.stdout | from_json).api }}"
+    vault_target_ca: "{{ (cluster_meta.stdout | from_json).ca }}"
+    vault_reviewer_jwt: "{{ reviewer_token_raw.stdout | b64decode }}"
+  no_log: true
+
+- name: "Phase 8 - Vault: enable auth method auth/{{ vault_mount_name }}/"
+  ansible.builtin.shell: |
+    kubectl --context {{ vault_kubectl_context | default('mgmt-forge') }} \
+      exec -n {{ vault_namespace | default('vault') }} {{ vault_leader_pod | default('vault-0') }} -- \
+      sh -c "VAULT_TOKEN={{ vault_root_token }} vault auth enable -path={{ vault_mount_name }} kubernetes"
+  register: vault_auth_enable
+  failed_when:
+    - vault_auth_enable.rc != 0
+    - "'path is already in use' not in vault_auth_enable.stderr"
+  changed_when: "'Success' in vault_auth_enable.stdout"
+  no_log: true
+
+- name: "Phase 8 - Vault: write mount config (host, ca_cert, token_reviewer_jwt)"
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --context {{ vault_kubectl_context | default('mgmt-forge') }} \
+        exec -i -n {{ vault_namespace | default('vault') }} {{ vault_leader_pod | default('vault-0') }} -- \
+        sh -c 'VAULT_TOKEN={{ vault_root_token }} vault write auth/{{ vault_mount_name }}/config -'
+    stdin: |
+      {{ {
+        "kubernetes_host": vault_target_api,
+        "kubernetes_ca_cert": vault_target_ca,
+        "token_reviewer_jwt": vault_reviewer_jwt
+      } | to_json }}
+  register: vault_auth_config
+  changed_when: "'Success' in vault_auth_config.stdout"
+  no_log: true
+
+- name: "Phase 8 - Vault: registration complete"
+  ansible.builtin.debug:
+    msg:
+      - "=============================================="
+      - "Vault Registration Complete"
+      - "=============================================="
+      - "Cluster '{{ cluster_name | regex_replace('-cluster$', '') }}' is now valid for Vault auth"
+      - "Mount: auth/{{ vault_mount_name }}/"
+      - "Workloads on this cluster can now bind to roles created with"
+      - "  mount: {{ vault_mount_name }}"
+      - "in vault-config / configure.yml."
+      - "=============================================="
