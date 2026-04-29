@@ -8,7 +8,7 @@
 #   - api_server_advertise_address  (target cluster API IP, from group_vars)
 #   - argocd_register         (bool, default true; skip if false)
 #   - argocd_instances        (list of ArgoCD namespaces, e.g. [argocd-sre, argocd-devops])
-#   - okd_kubeconfig          (kubeconfig with 'admin' context targeting OKD)
+#   - argocd_kubeconfig       (kubeconfig with 'admin' context targeting the cluster where ArgoCD runs — mgmt-control)
 #   - cluster_labels          (dict merged into the cluster Secret's metadata.labels)
 #   - cluster_labels_defaults (dict defaults from group_vars/all.yml)
 #
@@ -25,7 +25,7 @@
     msg:
       - "Registering {{ argocd_cluster_name }} with ArgoCD instances: {{ argocd_instances | join(', ') }}"
       - "Target cluster kubeconfig: {{ local_kubeconfig_path }}"
-      - "OKD kubeconfig: {{ okd_kubeconfig }}"
+      - "ArgoCD-host kubeconfig: {{ argocd_kubeconfig }}"
       - "Labels: {{ (cluster_labels_defaults | default({})) | combine(cluster_labels | default({})) }}"
   vars:
     argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
@@ -144,11 +144,11 @@
     argocd_cluster_name: "{{ cluster_name | regex_replace('-cluster$', '') }}"
   no_log: true
 
-- name: "Phase 8 - Apply ArgoCD cluster Secret to each ArgoCD namespace on OKD"
+- name: "Phase 8 - Apply ArgoCD cluster Secret to each ArgoCD namespace on mgmt-control"
   ansible.builtin.shell: |
     kubectl apply -n {{ item }} -f /tmp/argocd-cluster-{{ argocd_cluster_name }}.yaml
   environment:
-    KUBECONFIG: "{{ okd_kubeconfig }}"
+    KUBECONFIG: "{{ argocd_kubeconfig }}"
     KUBECTL_CONTEXT: admin
   register: argocd_secret_apply
   changed_when: "'created' in argocd_secret_apply.stdout or 'configured' in argocd_secret_apply.stdout"

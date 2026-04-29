@@ -1,0 +1,114 @@
+---
+# Kubernetes Cluster Configuration - Management Control Plane
+# =============================================================================
+# Control-plane cluster — durable services that orchestrate the rest of the
+# estate. Replaces OKD as the GitOps controller backbone.
+#
+# Network: Mgmt-DevOps-Net (VLAN 11, 10.10.2.0/24). Co-located with
+# mgmt-workload on the same VLAN.
+#
+# What runs here (per cplanes plan):
+#   - ArgoCD SRE  (vanilla helm chart, replaces OperatorHub-installed OpenShift GitOps)
+#   - ArgoCD DevOps (same)
+#   - Argo Workflows (DAG-based platform jobs)
+#   - Jenkins (legacy CI; chart at cplanes/devops/jenkins/)
+#   - Crossplane core + providers (cross-cluster IaC)
+#   - Backstage (developer portal — replaces OpenShift console)
+#   - Pattern A baseline (cert-manager, ingress-nginx, ESO, MetalLB, trivy-operator)
+#
+# Phase 8 self-registers mgmt-control with its own ArgoCD — that's expected.
+# Cluster Secret carries server URL of mgmt-control's apiserver.
+#
+# Usage:
+#   ansible-playbook -i inventory/mgmt-control.ini bootstrap-k8s.yml
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-control-cluster"
+cluster_type: "mgmt-control"
+cluster_description: "Control plane — ArgoCD, Crossplane, Jenkins, Argo Workflows, Backstage"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+network_name: "Mgmt-DevOps-Net"
+network_vlan: 11
+network_subnet: "10.10.2.0/24"
+network_gateway: "10.10.2.1"
+
+# Pod network CIDR (unique per cluster — reusing the slot mgmt-devops kubeadm
+# inventory had, since OKD on VLAN 11 used 10.128.0.0/14 internally and that
+# is no longer present after migration).
+pod_network_cidr: "10.245.0.0/16"
+
+# Service network CIDR (unique per cluster)
+service_cidr: "10.97.0.0/16"
+
+# API server advertise address (first control plane node)
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/.kube/mgmt-control"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+# Pool .200-.210 — leaves .211-.220 reserved for mgmt-workload (already in
+# the AppSet ladder). OKD's old VIPs (.50/.51) stay reserved on pfSense
+# HAProxy (not in MetalLB pool — disjoint allocation).
+metallb_enabled: true
+metallb_version: "0.14.8"
+metallb_ip_pool: "10.10.2.200-10.10.2.210"
+metallb_pool_name: "mgmt-control-pool"
+
+# =============================================================================
+# INGRESS CONFIGURATION
+# =============================================================================
+ingress_enabled: true
+ingress_controller: "nginx"
+ingress_lb_ip: "10.10.2.200"
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "argocd-sre"
+    description: "ArgoCD SRE instance — platform GitOps"
+    namespace: "argocd-sre"
+  - name: "argocd-devops"
+    description: "ArgoCD DevOps instance — application GitOps"
+    namespace: "argocd-devops"
+  - name: "argo-workflows"
+    description: "DAG-based platform workflow engine"
+    namespace: "argo-workflows"
+  - name: "jenkins"
+    description: "Legacy CI; chart at cplanes/devops/jenkins/"
+    namespace: "jenkins"
+  - name: "crossplane"
+    description: "Cross-cluster IaC controller"
+    namespace: "crossplane-system"
+  - name: "backstage"
+    description: "Developer portal — replaces OpenShift console"
+    namespace: "backstage"
+
+# =============================================================================
+# ARGOCD REGISTRATION LABELS
+# =============================================================================
+# `role: control` is a NEW label introduced for this cluster. AppSets that
+# need to target ONLY mgmt-control use `matchLabels: { role: control }`
+# (e.g., argo-workflows-appset, jenkins-appset, backstage-appset,
+# crossplane-appset).
+#
+# Pattern A AppSets (cert-manager, ingress-nginx, ESO, MetalLB,
+# trivy-operator) match via `tier In [mgmt,dev], role NotIn [storage]`
+# and pick this cluster up automatically.
+cluster_labels:
+  tier: mgmt
+  role: control
+  env: nonprod
+  storage: ceph-rbd

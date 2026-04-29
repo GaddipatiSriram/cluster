@@ -85,15 +85,47 @@ dns_records:
     hostnames:
       - "ingress.mgmt-forge"
 
+  # mgmt-control Kubernetes nodes (VLAN 11, 10.10.2.0/24) — replaces OKD
+  - ip: "10.10.2.110"
+    hostnames:
+      - "mgmt-control-01"
+  - ip: "10.10.2.111"
+    hostnames:
+      - "mgmt-control-02"
+  - ip: "10.10.2.112"
+    hostnames:
+      - "mgmt-control-03"
+
+  # mgmt-control ingress VIP (MetalLB pool .200-.210)
+  - ip: "10.10.2.200"
+    hostnames:
+      - "ingress.mgmt-control"
+
+  # mgmt-workload Kubernetes node (VLAN 11, single-node)
+  - ip: "10.10.2.120"
+    hostnames:
+      - "mgmt-workload-01"
+
+  # mgmt-workload ingress VIP (MetalLB pool .211-.220)
+  - ip: "10.10.2.211"
+    hostnames:
+      - "ingress.mgmt-workload"
+
 # =============================================================================
 # Wildcard DNS Records
 # =============================================================================
-# Base wildcard records (non-OKD)
-# OKD wildcard records are defined in group_vars/okd.yml
 wildcard_records:
   # Forge cluster apps: *.apps.mgmt-forge.engatwork.com → ingress-nginx VIP
   - zone: "apps.mgmt-forge"
     ip: "10.10.5.201"
+
+  # mgmt-control apps: *.apps.mgmt-control.engatwork.com → ingress-nginx VIP
+  - zone: "apps.mgmt-control"
+    ip: "10.10.2.200"
+
+  # mgmt-workload apps: *.apps.mgmt-workload.engatwork.com → ingress-nginx VIP
+  - zone: "apps.mgmt-workload"
+    ip: "10.10.2.211"
 
 # =============================================================================
 # Kubeconfig (path on control plane node)

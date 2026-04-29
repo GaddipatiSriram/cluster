@@ -95,15 +95,17 @@ dns_domain: "engatwork.com"
 # mgmt-storage — foundational clusters we deliberately don't manage via GitOps).
 argocd_register: true
 
-# ArgoCD namespaces on OKD to register the cluster with.
-# One cluster Secret will be created per entry.
+# ArgoCD namespaces to register the cluster with.
+# One cluster Secret will be created per entry. Both instances run on
+# mgmt-control (vanilla helm install; replaces OperatorHub'd OKD).
 argocd_instances:
   - argocd-sre
   - argocd-devops
 
-# Kubeconfig on the control host that has admin access to the OKD cluster
-# where ArgoCD runs.
-okd_kubeconfig: "/root/.kube/config"
+# Kubeconfig on the control host that has admin access to the cluster
+# where ArgoCD runs (mgmt-control). The kubeadm bootstrap deposits this
+# at /root/.kube/mgmt-control after Phase 7 (kubeconfig fetch).
+argocd_kubeconfig: "/root/.kube/mgmt-control"
 
 # Labels applied to every ArgoCD cluster Secret (merged with per-cluster labels).
 # These support ApplicationSet cluster-generator selectors.
