@@ -127,6 +127,10 @@ wildcard_records:
   - zone: "apps.mgmt-workload"
     ip: "10.10.2.211"
 
+  # mgmt-observability apps: *.apps.mgmt-observability.engatwork.com → ingress-nginx VIP
+  - zone: "apps.mgmt-observability"
+    ip: "10.10.3.201"
+
 # =============================================================================
 # Kubeconfig (path on control plane node)
 # =============================================================================
