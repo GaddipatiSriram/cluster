@@ -1,0 +1,71 @@
+---
+# Kubernetes Cluster Configuration - Management Storage
+# =============================================================================
+# Storage cluster: Rook-Ceph (operator + cluster). Provides RBD/CephFS/RGW
+# to every workload-capable cluster via rook-ceph-external bundles.
+# Network: Mgmt-Storage-Net (VLAN 13, 10.10.4.0/24)
+#
+# Phase 8 only — bootstrap was historically done out-of-band.
+# This file exists so re-onboarding (e.g. registering with mgmt-control's
+# ArgoCD after the OKD migration) goes through the standard Phase 8 path.
+
+# =============================================================================
+# CLUSTER IDENTITY
+# =============================================================================
+cluster_name: "mgmt-storage-cluster"
+cluster_type: "mgmt-storage"
+cluster_description: "Storage plane - Rook-Ceph (operator + cluster); RBD/CephFS/RGW provider"
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+network_name: "Mgmt-Storage-Net"
+network_vlan: 13
+network_subnet: "10.10.4.0/24"
+network_gateway: "10.10.4.1"
+
+# Pod / service CIDRs left as the bootstrap defaults that are baked into
+# the live mgmt-storage cluster — Phase 8 doesn't touch these, but Phase 1
+# would assert against them if rerun. Document for completeness:
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/16"
+
+api_server_advertise_address: "{{ hostvars[groups['k8s_first_control_plane'][0]]['ansible_host'] }}"
+control_plane_endpoint: "{{ api_server_advertise_address }}:6443"
+
+# =============================================================================
+# KUBECONFIG
+# =============================================================================
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+local_kubeconfig_path: "/root/.kube/mgmt-storage"
+
+# =============================================================================
+# METALLB CONFIGURATION
+# =============================================================================
+# mgmt-storage runs Rook-Ceph server-side; no MetalLB needed (no
+# LoadBalancer services). Pattern A AppSets exclude role=storage so
+# MetalLB chart never targets here either.
+metallb_enabled: false
+
+# =============================================================================
+# CLUSTER-SPECIFIC SERVICES
+# =============================================================================
+cluster_services:
+  - name: "rook-ceph-operator"
+    description: "Rook-Ceph operator - manages CephCluster CR"
+    namespace: "rook-ceph"
+  - name: "rook-ceph-cluster"
+    description: "CephCluster - the actual Ceph mon/mgr/osd daemons"
+    namespace: "rook-ceph"
+
+# =============================================================================
+# ARGOCD REGISTRATION LABELS
+# =============================================================================
+# Pattern A AppSets exclude role=storage (cert-manager / ingress-nginx /
+# ESO / MetalLB / trivy-operator do NOT deploy here). Only the explicit
+# rook-ceph operator + cluster Apps target mgmt-storage by name.
+cluster_labels:
+  tier: mgmt
+  role: storage
+  env: nonprod
+  storage: none
